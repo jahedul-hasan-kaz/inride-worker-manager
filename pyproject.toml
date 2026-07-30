@@ -1,0 +1,33 @@
+[tool.poetry]
+name = "worker-management"
+version = "0.1.0"
+description = "worker management service"
+authors = []
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.10"
+uvicorn = "^0.34.0"
+fastapi = "^0.115.0"
+pydantic = {version = "^1.10.2", extras = ["email"]}
+python-dotenv = "^0.10.1"
+loguru = "^0.7.3"
+google-cloud-pubsub = "^2.14.0"
+sqlalchemy = "^2.0.0"
+psycopg2-binary = "^2.9.0"
+requests = "^2.32.3"
+exponent-server-sdk = "*"
+opentelemetry-api = "^1.29.0"
+opentelemetry-sdk = "^1.29.0"
+opentelemetry-instrumentation-fastapi = "^0.50b0"
+
+[tool.poetry.dev-dependencies]
+pytest = "*"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
