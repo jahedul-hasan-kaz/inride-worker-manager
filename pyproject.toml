@@ -13,6 +13,7 @@ pydantic = {version = "^1.10.2", extras = ["email"]}
 python-dotenv = "^0.10.1"
 loguru = "^0.7.3"
 google-cloud-pubsub = "^2.14.0"
+google-cloud-secret-manager = "^2.12.4"
 sqlalchemy = "^2.0.0"
 psycopg2-binary = "^2.9.0"
 requests = "^2.32.3"

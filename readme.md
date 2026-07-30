@@ -8,8 +8,9 @@
 
 ## Setup
 
-1. Run SQL:
-Copy `.env.example` → `.env` and fill in values (see below)
+1. Run SQL (see ai-agent-management migration scripts).
+2. Copy `dev.env.example` → `dev.env` and fill in local values (plaintext secrets).
+3. Prod/deploy uses committed `.env` (secret **names** + tunables); `get_secret()` fetches values from GCP Secret Manager.
 
 ### Install packages
 
@@ -36,7 +37,7 @@ poetry shell
 uvicorn app.main:app --host 0.0.0.0 --port 8080
 ```
 
-Port defaults to `8080` (`PORT` in `.env`). Health: `http://localhost:8080/health`.
+Port defaults to `8080` (`PORT` in `dev.env`). Health: `http://localhost:8080/health`.
 
 
 ## Notification Architecture
@@ -50,17 +51,36 @@ Polls / consumes pending notification delivery work and sends Expo pushes.
 - **Extensibility:** `DeliveryJob` + `DeliveryPolicy` for future TTL / aggregation
 
 
-## Environment variables
+## Environment files (ai-agent pattern)
+
+| File | Git | Purpose |
+| --- | --- | --- |
+| `dev.env` | ignored | Local dev: plaintext secrets (`PG_DB_URL`, `EXPO_ACCESS_TOKEN_KEY`) and overrides |
+| `dev.env.example` | committed | Template for `dev.env` |
+| `.env` | committed | Prod/deploy: GCP secret **ids** (`*_NAME`) and non-secret tunables |
+
+`app/core/env.py` loads `dev.env` when `ENV=dev` (default), else `.env`.
+
+Sensitive values are resolved via `get_secret()` in [`app/core/secrets.py`](app/core/secrets.py). All settings are exposed on `config` in [`app/core/config.py`](app/core/config.py). Application code should read from `config`, not `os.getenv` directly.
+
+`get_secret()` resolution:
+
+1. Plaintext env var if set (from `dev.env`, or Cloud Run injected value).
+2. Else GCP Secret Manager via `{KEY}_NAME` from `.env` (e.g. `PG_DB_URL_NAME=pg-db-url`).
+3. Requires `PROJECT_NUMBER` when using the `*_NAME` path.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `ENV` | `dev` | Runtime environment. `dev` uses debug logging and relaxes readiness (Pub/Sub not required). Non-dev requires Pub/Sub config for `/ready`. |
 | `PORT` | `8080` | HTTP port for the FastAPI health/ready server. |
 | `PROJECT_ID` | — | GCP project ID used to resolve the Pub/Sub subscription path (`projects/{PROJECT_ID}/subscriptions/...`). |
+| `PROJECT_NUMBER` | — | GCP project number; required when resolving secrets via `*_NAME` from Secret Manager. |
 | `PG_DB_URL` | — | Postgres connection string (notifications DB). Required for the worker and integration tests. Prefer the transaction pooler (`:6543`) with NullPool. |
+| `PG_DB_URL_NAME` | — | GCP Secret Manager secret id for `PG_DB_URL` (prod alternative to plaintext). |
 | `EXPO_PUSH_PUBSUB_TOPIC_NAME` | `expo-push-notifications` | Pub/Sub topic the outbox relay publishes to (management side). Documented here so topic/subscription stay aligned. |
 | `EXPO_PUSH_PUBSUB_SUBSCRIPTION` | `expo-push-notifications-sub` | Pub/Sub subscription this worker pulls from (primary ingress). |
 | `EXPO_ACCESS_TOKEN_KEY` | — | Expo push access token for authenticated Expo HTTP API sends. |
+| `EXPO_ACCESS_TOKEN_KEY_NAME` | — | GCP Secret Manager secret id for the Expo token (prod alternative to plaintext). |
 | `POLL_INTERVAL_SECONDS` | `60` | How often the DB fallback poller wakes to claim pending notifications (`SKIP LOCKED`) when Pub/Sub is quiet or messages were dropped. |
 | `BATCH_SIZE` | `50` | Max pending notification rows claimed per DB poll cycle. |
 | `RECLAIM_AFTER_SECONDS` | `900` | Age after which a stuck `processing` notification is reclaimed (worker crash / lease expiry recovery). Default 15 minutes. |
@@ -70,7 +90,7 @@ Polls / consumes pending notification delivery work and sends Expo pushes.
 | `PUBSUB_ACK_EXTENSION_SECONDS` | `600` | Extends the Pub/Sub ack deadline while a long Expo fan-out runs so the message is not redelivered mid-send. |
 | `SUMMARY_LOG_INTERVAL_SECONDS` | `300` | How often the worker emits a summary metrics log line. Default 5 minutes. |
 
-Optional (not in `.env.example`, have code defaults):
+Optional (not in `dev.env.example`, have code defaults):
 
 | Variable | Default | Purpose |
 | --- | --- | --- |

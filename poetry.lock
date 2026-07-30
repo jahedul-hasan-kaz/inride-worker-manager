@@ -571,6 +571,29 @@ protobuf = ">=4.25.8,<8.0.0"
 libcst = ["libcst (>=0.3.10)"]
 
 [[package]]
+name = "google-cloud-secret-manager"
+version = "2.30.0"
+description = "Google Cloud Secret Manager API client library"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "google_cloud_secret_manager-2.30.0-py3-none-any.whl", hash = "sha256:0f285e77d09a73700e3fca9abbc77f844a50276989bf76d64a76b6e2b871e396"},
+    {file = "google_cloud_secret_manager-2.30.0.tar.gz", hash = "sha256:26ec87737731b483f7f95c26a8c7ab79e22cb66317c95006e7f6985dbc43c8a2"},
+]
+
+[package.dependencies]
+google-api-core = {version = ">=2.24.2,<3.0.0", extras = ["grpc"]}
+google-auth = ">=2.14.1,<2.24.0 || >2.24.0,<2.25.0 || >2.25.0,<3.0.0"
+grpc-google-iam-v1 = ">=0.14.2,<1.0.0"
+grpcio = [
+    {version = ">=1.59.0,<2.0.0"},
+    {version = ">=1.75.1,<2.0.0", markers = "python_version >= \"3.14\""},
+]
+proto-plus = ">=1.26.1,<2.0.0"
+protobuf = ">=6.33.5,<8.0.0"
+
+[[package]]
 name = "googleapis-common-protos"
 version = "1.75.0"
 description = "Common protobufs used in Google APIs"
@@ -1667,4 +1690,4 @@ type = ["pytest-mypy (>=1.0.1) ; platform_python_implementation != \"PyPy\""]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.10"
-content-hash = "1b98b209aefcc8bd163072b5f188e140d2cbbb2293c072f45837c919121eb386"
+content-hash = "3f7097a58865c65904fbffd8475b90fc77a8f9f89c408ddf7ac2e66d91800297"

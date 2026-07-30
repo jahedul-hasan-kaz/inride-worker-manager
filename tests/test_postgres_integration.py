@@ -11,21 +11,21 @@ Requires schema from:
 """
 from __future__ import annotations
 
-import os
 import uuid
 from datetime import datetime
 
 import pytest
 from sqlalchemy import text
 
+from app.core.config import config  # noqa: E402
+from app.core.env import get_env  # noqa: E402
+
 # Skip entire module unless explicitly enabled with a real DB URL.
-if os.getenv("INTEGRATION_TEST", "").strip() != "1" or not os.getenv("PG_DB_URL", "").strip():
+if get_env("INTEGRATION_TEST") != "1" or not config.PG_DB_URL:
     pytest.skip(
         "Set INTEGRATION_TEST=1 and PG_DB_URL to run Postgres integration tests",
         allow_module_level=True,
     )
-
-from app.core.config import config  # noqa: E402
 from app.db.postgres import PostgresClient  # noqa: E402
 from app.db.session import session_scope  # noqa: E402
 from app.domain.models import DeliveryJob, DeliveryTarget, JobKind  # noqa: E402

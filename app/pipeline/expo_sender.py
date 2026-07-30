@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import time
 from typing import Any, Optional
 
@@ -52,7 +51,7 @@ class ExpoSender:
         if self._client is not None:
             return self._client
 
-        token = config.EXPO_ACCESS_TOKEN_KEY or os.getenv("EXPO_ACCESS_TOKEN_KEY", "")
+        token = config.EXPO_ACCESS_TOKEN_KEY
         if not token:
             self._client = PushClient()
             return self._client
