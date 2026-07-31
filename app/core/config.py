@@ -44,6 +44,10 @@ class Config:
         self.PUBSUB_ACK_EXTENSION_SECONDS = get_env_int("PUBSUB_ACK_EXTENSION_SECONDS", 600)
         self.SUMMARY_LOG_INTERVAL_SECONDS = get_env_float("SUMMARY_LOG_INTERVAL_SECONDS", 300)
 
+        self.PUSH_INGRESS_MODE = get_env("PUSH_INGRESS_MODE", "poll").lower()
+        self.AGENT_MANAGEMENT_BASE_URL = get_env("AGENT_MANAGEMENT_BASE_URL", "")
+        self.AGENT_MANAGEMENT_SERVICE_TOKEN = get_secret("AGENT_MANAGEMENT_SERVICE_TOKEN")
+
         self.PG_USE_NULL_POOL = get_env_bool("PG_USE_NULL_POOL", True)
         self.PG_POOL_SIZE = get_env_int("PG_POOL_SIZE", 3)
         self.PG_MAX_OVERFLOW = get_env_int("PG_MAX_OVERFLOW", 2)

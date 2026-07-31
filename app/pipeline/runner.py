@@ -10,24 +10,24 @@ from app.domain.handle_result import HandleDisposition, HandleResult
 from app.domain.models import DeliveryJob, DeliveryResult, DeviceSendOutcome, PushStatus
 from app.domain.policies import DeliveryPolicy, ImmediateSingleNotificationPolicy
 from app.monitoring.metrics import push_metrics
+from app.pipeline.agent_management_client import AgentManagementClient
 from app.pipeline.claimer import NotificationClaimer
 from app.pipeline.device_idempotency import DeviceIdempotency
-from app.pipeline.expo_sender import ExpoSender
 from app.pipeline.finalizer import NotificationFinalizer
 from app.pipeline.recipient_resolver import RecipientResolver
 
 
 class DeliveryRunner:
-    """Orchestrates policy → claim → recipients → per-device send → finalize."""
+    """Orchestrates policy → claim → recipients → agent push API → finalize."""
 
     def __init__(
         self,
         *,
         policy: Optional[DeliveryPolicy] = None,
-        sender: Optional[ExpoSender] = None,
+        sender: Optional[AgentManagementClient] = None,
     ) -> None:
         self.policy = policy or ImmediateSingleNotificationPolicy()
-        self.sender = sender or ExpoSender()
+        self.sender = sender or AgentManagementClient()
 
     def handle_notification_id(self, notification_id: UUID) -> HandleResult:
         """Ingress entrypoint with explicit ack/nack disposition."""
@@ -86,31 +86,46 @@ class DeliveryRunner:
                 NotificationFinalizer.finalize(session, job, status=PushStatus.SENT)
             return DeliveryResult(job=job, notification_status=PushStatus.SENT, device_outcomes=[])
 
-        outcomes: list[DeviceSendOutcome] = []
-        invalid_token_ids: list[UUID] = []
+        claimed_targets = []
+        skipped_outcomes: list[DeviceSendOutcome] = []
 
         for target in targets:
-            # Short DB TX only — connection released before Expo HTTP.
             with session_scope() as session:
                 claimed = DeviceIdempotency.try_claim(session, job, target)
 
             if not claimed:
                 push_metrics.device_attempted("skipped")
-                outcomes.append(
+                skipped_outcomes.append(
                     DeviceSendOutcome(device_token_id=target.device_token_id, result="skipped")
                 )
                 continue
+            claimed_targets.append(target)
 
-            ok, error, deactivate = self.sender.send(job, target)
-
+        if not claimed_targets:
             with session_scope() as session:
-                if ok:
+                DeviceIdempotency.seal_open_sending(session, job)
+                any_sent = DeviceIdempotency.has_any_sent(session, job)
+                status = PushStatus.SENT if any_sent else PushStatus.SENT
+                NotificationFinalizer.finalize(session, job, status=status)
+            return DeliveryResult(
+                job=job,
+                notification_status=PushStatus.SENT,
+                device_outcomes=skipped_outcomes,
+            )
+
+        ok, error, deactivated_ids = self.sender.send_push(job, claimed_targets)
+        outcomes: list[DeviceSendOutcome] = list(skipped_outcomes)
+
+        with session_scope() as session:
+            if ok:
+                for target in claimed_targets:
                     DeviceIdempotency.mark_sent(session, job, target.device_token_id)
                     push_metrics.device_attempted("sent")
                     outcomes.append(
                         DeviceSendOutcome(device_token_id=target.device_token_id, result="sent")
                     )
-                else:
+            else:
+                for target in claimed_targets:
                     DeviceIdempotency.release_claim(session, job, target.device_token_id)
                     push_metrics.device_attempted("failed")
                     outcomes.append(
@@ -120,23 +135,15 @@ class DeliveryRunner:
                             error=error,
                         )
                     )
-                    if deactivate:
-                        invalid_token_ids.append(target.device_token_id)
 
-        with session_scope() as session:
-            if invalid_token_ids:
-                NotificationFinalizer.deactivate_tokens(session, invalid_token_ids)
+            if deactivated_ids:
+                NotificationFinalizer.deactivate_tokens(session, deactivated_ids)
 
-            # Prior crash may have left ``sending`` rows; never Expo again — seal them.
             DeviceIdempotency.seal_open_sending(session, job)
-
-            any_sent = any(o.result == "sent" for o in outcomes)
-            if not any_sent:
-                any_sent = DeviceIdempotency.has_any_sent(session, job)
-
+            any_sent = ok or DeviceIdempotency.has_any_sent(session, job)
             status = PushStatus.SENT if any_sent else PushStatus.FAILED
-            error = None if any_sent else "all_device_sends_failed"
-            NotificationFinalizer.finalize(session, job, status=status, error=error)
+            finalize_error = None if any_sent else (error or "all_device_sends_failed")
+            NotificationFinalizer.finalize(session, job, status=status, error=finalize_error)
 
         if status == PushStatus.FAILED:
             logger.warning(
@@ -149,5 +156,5 @@ class DeliveryRunner:
             job=job,
             notification_status=status,
             device_outcomes=outcomes,
-            error=error,
+            error=finalize_error,
         )

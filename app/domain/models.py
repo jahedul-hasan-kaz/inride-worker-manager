@@ -42,6 +42,7 @@ class DeliveryJob:
     sender: Optional[str] = None
     to: Optional[str] = None
     thread_id: Optional[str] = None
+    direction: Optional[str] = None
     email_log_id: Optional[UUID] = None
     sms_log_id: Optional[int] = None
     expires_at: Optional[datetime] = None  # future TTL

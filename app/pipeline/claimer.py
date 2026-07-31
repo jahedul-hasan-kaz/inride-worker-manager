@@ -23,6 +23,7 @@ def _row_to_job(row: NotificationInDB) -> DeliveryJob:
         sender=row.from_,
         to=row.to,
         thread_id=row.thread_id,
+        direction=row.direction,
         email_log_id=row.email_log_id,
         sms_log_id=int(row.sms_log_id) if row.sms_log_id is not None else None,
         source_notification_ids=[row.id],

@@ -24,6 +24,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     semaphore = asyncio.Semaphore(config.MAX_CONCURRENT_NOTIFICATIONS)
     poller = PendingPoller(runner, semaphore)
     subscriber = ExpoPushSubscriber(runner, semaphore)
+    subscriber_started = False
     summary_task: Optional[asyncio.Task] = None
 
     async def _summary_loop() -> None:
@@ -36,7 +37,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 push_metrics.log_summary()
 
     poller.start()
-    subscriber.start()
+    if config.PUSH_INGRESS_MODE == "pubsub":
+        subscriber.start()
+        subscriber_started = True
+        logger.info("Push ingress mode=pubsub (Pub/Sub subscriber enabled)")
+    else:
+        logger.info("Push ingress mode=poll (Pub/Sub subscriber disabled)")
     summary_task = asyncio.create_task(_summary_loop(), name="metrics-summary")
     app.state.runner = runner
     app.state.poller = poller
@@ -51,7 +57,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             stop_event.set()
         if summary_task is not None:
             summary_task.cancel()
-        await subscriber.stop()
+        if subscriber_started:
+            await subscriber.stop()
         await poller.stop()
         push_metrics.log_summary()
         PostgresClient.close()
@@ -76,7 +83,7 @@ async def ready() -> dict:
         raise HTTPException(status_code=503, detail=f"database_unavailable: {exc}") from exc
 
     pubsub_ok = bool(config.PROJECT_ID and config.EXPO_PUSH_PUBSUB_SUBSCRIPTION)
-    if config.ENV != "dev" and not pubsub_ok:
+    if config.ENV != "dev" and config.PUSH_INGRESS_MODE == "pubsub" and not pubsub_ok:
         raise HTTPException(status_code=503, detail="pubsub_not_configured")
 
     return {

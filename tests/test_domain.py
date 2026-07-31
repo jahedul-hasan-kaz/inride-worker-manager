@@ -117,10 +117,7 @@ def test_execute_job_partial_success_marks_sent():
     )
 
     sender = MagicMock()
-    sender.send.side_effect = [
-        (True, None, False),
-        (False, "boom", False),
-    ]
+    sender.send_push.return_value = (True, None, [])
     runner = DeliveryRunner(sender=sender)
 
     with patch("app.pipeline.runner.session_scope") as scope, patch(
@@ -129,8 +126,6 @@ def test_execute_job_partial_success_marks_sent():
     ), patch("app.pipeline.runner.DeviceIdempotency.try_claim", return_value=True), patch(
         "app.pipeline.runner.DeviceIdempotency.mark_sent"
     ) as mark_sent, patch(
-        "app.pipeline.runner.DeviceIdempotency.release_claim"
-    ) as release, patch(
         "app.pipeline.runner.DeviceIdempotency.seal_open_sending",
         return_value=0,
     ), patch(
@@ -147,8 +142,8 @@ def test_execute_job_partial_success_marks_sent():
         result = runner.process_job(job)
 
     assert result.notification_status == PushStatus.SENT
-    assert mark_sent.call_count == 1
-    assert release.call_count == 1
+    assert mark_sent.call_count == 2
+    sender.send_push.assert_called_once()
     finalize.assert_called()
     assert finalize.call_args.kwargs["status"] == PushStatus.SENT
 
@@ -166,7 +161,7 @@ def test_execute_job_all_failed_marks_failed():
         notification_priority=0,
     )
     sender = MagicMock()
-    sender.send.return_value = (False, "fail", False)
+    sender.send_push.return_value = (False, "fail", [])
     runner = DeliveryRunner(sender=sender)
 
     with patch("app.pipeline.runner.session_scope") as scope, patch(
@@ -174,7 +169,7 @@ def test_execute_job_all_failed_marks_failed():
         return_value=[target],
     ), patch("app.pipeline.runner.DeviceIdempotency.try_claim", return_value=True), patch(
         "app.pipeline.runner.DeviceIdempotency.release_claim"
-    ), patch(
+    ) as release, patch(
         "app.pipeline.runner.DeviceIdempotency.seal_open_sending",
         return_value=0,
     ), patch(
@@ -191,4 +186,5 @@ def test_execute_job_all_failed_marks_failed():
         result = runner.process_job(job)
 
     assert result.notification_status == PushStatus.FAILED
+    assert release.call_count == 1
     assert finalize.call_args.kwargs["status"] == PushStatus.FAILED
