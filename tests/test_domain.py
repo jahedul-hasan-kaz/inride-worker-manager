@@ -8,6 +8,7 @@ from app.domain.handle_result import HandleDisposition
 from app.domain.models import DeliveryJob, JobKind, PushStatus
 from app.domain.policies import ImmediateSingleNotificationPolicy
 from app.monitoring.metrics import PushMetrics
+from app.pipeline.push_types import BatchPushResponse, PushSendResult
 from app.pipeline.runner import DeliveryRunner
 
 
@@ -117,7 +118,14 @@ def test_execute_job_partial_success_marks_sent():
     )
 
     sender = MagicMock()
-    sender.send_push.return_value = (True, None, [])
+    sender.send_push_batch.return_value = BatchPushResponse(
+        sent_count=2,
+        failed_count=0,
+        results=[
+            PushSendResult(device_token_id=target_ok.device_token_id, status="sent"),
+            PushSendResult(device_token_id=target_bad.device_token_id, status="sent"),
+        ],
+    )
     runner = DeliveryRunner(sender=sender)
 
     with patch("app.pipeline.runner.session_scope") as scope, patch(
@@ -143,7 +151,7 @@ def test_execute_job_partial_success_marks_sent():
 
     assert result.notification_status == PushStatus.SENT
     assert mark_sent.call_count == 2
-    sender.send_push.assert_called_once()
+    sender.send_push_batch.assert_called_once()
     finalize.assert_called()
     assert finalize.call_args.kwargs["status"] == PushStatus.SENT
 
@@ -161,7 +169,17 @@ def test_execute_job_all_failed_marks_failed():
         notification_priority=0,
     )
     sender = MagicMock()
-    sender.send_push.return_value = (False, "fail", [])
+    sender.send_push_batch.return_value = BatchPushResponse(
+        sent_count=0,
+        failed_count=1,
+        results=[
+            PushSendResult(
+                device_token_id=target.device_token_id,
+                status="failed",
+                error="fail",
+            ),
+        ],
+    )
     runner = DeliveryRunner(sender=sender)
 
     with patch("app.pipeline.runner.session_scope") as scope, patch(

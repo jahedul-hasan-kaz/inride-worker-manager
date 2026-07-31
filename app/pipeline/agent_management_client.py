@@ -7,71 +7,69 @@ import requests
 from loguru import logger
 
 from app.core.config import config
-from app.domain.models import DeliveryJob, DeliveryTarget
+from app.pipeline.push_types import BatchPushResponse, PushSendResult
 
 
 class AgentManagementClient:
-    """Calls agent-management send-push API instead of Expo directly."""
+    """Sends pre-built push batches to agent-management (Expo only)."""
 
-    def send_push(
-        self,
-        job: DeliveryJob,
-        targets: List[DeliveryTarget],
-    ) -> tuple[bool, str | None, list[UUID]]:
-        if not targets:
-            return True, None, []
+    def send_push_batch(self, items: List[dict]) -> BatchPushResponse:
+        if not items:
+            return BatchPushResponse()
 
         base_url = (config.AGENT_MANAGEMENT_BASE_URL or "").rstrip("/")
         if not base_url:
             logger.error("AGENT_MANAGEMENT_BASE_URL is not configured")
-            return False, "agent_management_base_url_missing", []
+            return BatchPushResponse(failed_count=len(items))
 
         token = config.AGENT_MANAGEMENT_SERVICE_TOKEN
         if not token:
             logger.error("AGENT_MANAGEMENT_SERVICE_TOKEN is not configured")
-            return False, "agent_management_service_token_missing", []
+            return BatchPushResponse(failed_count=len(items))
 
-        url = f"{base_url}/api/notifications/{job.notification_id}/push"
-        device_token_ids = [str(target.device_token_id) for target in targets]
+        url = f"{base_url}/api/notifications/push"
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         }
-        payload = {"device_token_ids": device_token_ids}
+        payload = {"items": items}
 
         try:
-            response = requests.post(url, json=payload, headers=headers, timeout=30)
+            response = requests.post(url, json=payload, headers=headers, timeout=60)
             response.raise_for_status()
         except requests.RequestException as exc:
-            logger.exception(
-                "Agent push API failed for notification {}: {}",
-                job.notification_id,
-                exc,
-            )
-            return False, str(exc), []
+            logger.exception("Agent push batch API failed: {}", exc)
+            return BatchPushResponse(failed_count=len(items))
 
         try:
             body = response.json()
         except ValueError:
-            return True, None, []
+            return BatchPushResponse(failed_count=len(items))
 
         data = body.get("data") or body
         sent_count = int(data.get("sent_count") or 0)
-        deactivated_raw = data.get("deactivated_token_ids") or []
-        deactivated_ids: list[UUID] = []
-        for raw_id in deactivated_raw:
+        failed_count = int(data.get("failed_count") or 0)
+        results: List[PushSendResult] = []
+
+        for raw in data.get("results") or []:
             try:
-                deactivated_ids.append(UUID(str(raw_id)))
+                device_token_id = UUID(str(raw.get("device_token_id")))
             except (ValueError, TypeError):
                 continue
+            results.append(
+                PushSendResult(
+                    device_token_id=device_token_id,
+                    status=str(raw.get("status") or "failed"),
+                    deactivate=bool(raw.get("deactivate")),
+                    error=raw.get("error"),
+                )
+            )
 
-        if sent_count <= 0:
-            return False, "agent_push_no_devices_sent", deactivated_ids
+        if not results and items:
+            failed_count = len(items)
 
-        return True, None, deactivated_ids
-
-    def send(self, job: DeliveryJob, target: DeliveryTarget) -> tuple[bool, str | None, bool]:
-        """Compatibility shim for per-device runner loop — batches via single-target call."""
-        ok, error, deactivated = self.send_push(job, [target])
-        deactivate = target.device_token_id in deactivated
-        return ok, error, deactivate
+        return BatchPushResponse(
+            sent_count=sent_count,
+            failed_count=failed_count,
+            results=results,
+        )

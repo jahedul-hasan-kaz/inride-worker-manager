@@ -72,8 +72,5 @@ class PendingPoller:
         if not jobs:
             return
 
-        async def _run(job):
-            async with self.semaphore:
-                await asyncio.to_thread(self.runner.process_job, job)
-
-        await asyncio.gather(*[_run(job) for job in jobs], return_exceptions=True)
+        async with self.semaphore:
+            await asyncio.to_thread(self.runner.process_batch, jobs)
