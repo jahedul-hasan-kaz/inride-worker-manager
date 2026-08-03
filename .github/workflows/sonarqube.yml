@@ -1,0 +1,26 @@
+name: Manual SonarQube Analysis
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to checkout (e.g., 1.0.0)'
+        required: true
+        type: string
+
+jobs:
+  sonarqube:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code at tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag }}
+          fetch-depth: 0
+
+      - name: SonarQube Scan
+        uses: sonarsource/sonarqube-scan-action@master
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        continue-on-error: true
