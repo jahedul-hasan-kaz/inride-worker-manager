@@ -1,0 +1,32 @@
+name: Manual Lint (mypy)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to checkout (e.g., 1.0.0)'
+        required: true
+        type: string
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code at tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install mypy
+        run: |
+          python -m pip install --upgrade pip
+          pip install mypy
+
+      - name: Run mypy
+        run: mypy app
+        continue-on-error: true
