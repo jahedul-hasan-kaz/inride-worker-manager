@@ -1,0 +1,54 @@
+name: Deploy to UAT
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag to deploy (e.g., 1.0.0)'
+        required: true
+        type: string
+
+jobs:
+  clone-and-deploy:
+    runs-on: ubuntu-latest
+    environment: uat
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Pull and push to UAT GCR
+        run: |
+          # Authenticate to Kitchen GCR
+          echo '${{ secrets.SERVICE_ACCOUNT_KITCHEN }}' | docker login -u _json_key --password-stdin https://gcr.io
+          
+          # Pull image from kitchen
+          docker pull gcr.io/${{ secrets.PROJECT_ID_KITCHEN }}/${{ secrets.GCR_REPO }}:${{ github.event.inputs.tag }}
+          
+          # Get image ID
+          image_id=$(docker images -q | head -n1)
+          echo "Image ID: $image_id"
+          
+          # Authenticate to UAT GCR
+          echo '${{ secrets.SERVICE_ACCOUNT_UAT }}' | docker login -u _json_key --password-stdin https://gcr.io
+          
+          # Tag and push to UAT GCR
+          docker tag $image_id gcr.io/${{ secrets.PROJECT_ID_UAT }}/${{ secrets.GCR_REPO }}/${{ github.event.inputs.tag }}:${{ github.event.inputs.tag }}
+          docker push gcr.io/${{ secrets.PROJECT_ID_UAT }}/${{ secrets.GCR_REPO }}/${{ github.event.inputs.tag }}:${{ github.event.inputs.tag }}
+
+      - name: Deploy to Cloud Run UAT
+        env:
+          IMAGE_TAG: ${{ github.event.inputs.tag }}
+          PROJECT_ID: ${{ secrets.PROJECT_ID_UAT }}
+          GCR_REPO: ${{ secrets.GCR_REPO }}
+        run: |
+          # Authenticate to GCP for UAT
+          echo '${{ secrets.SERVICE_ACCOUNT_UAT }}' > /tmp/${{ github.run_id }}.json
+          gcloud auth activate-service-account --key-file /tmp/${{ github.run_id }}.json
+          gcloud config set project ${{ secrets.PROJECT_ID_UAT }}
+          
+          # Run GitHub deployment script
+          chmod +x ./scripts/deploy-github.sh
+          bash ./scripts/deploy-github.sh
+          
+          # Cleanup
+          rm -f /tmp/${{ github.run_id }}.json
