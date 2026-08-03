@@ -45,28 +45,12 @@ class Config:
             "NOTIFICATION_PUBSUB_TOPIC_NAME",
             "notification-pubsub",
         )
-        self.EXPO_PUSH_PUBSUB_TOPIC_NAME = get_env(
-            "EXPO_PUSH_PUBSUB_TOPIC_NAME",
-            "expo-push-notifications",
-        )
-        self.EXPO_PUSH_PUBSUB_SUBSCRIPTION = get_env(
-            "EXPO_PUSH_PUBSUB_SUBSCRIPTION",
-            "expo-push-notifications-sub",
-        )
-        self.EXPO_ACCESS_TOKEN_KEY = get_secret("EXPO_ACCESS_TOKEN_KEY")
 
         self.POLL_INTERVAL_SECONDS = get_env_float("POLL_INTERVAL_SECONDS", 60)
         self.BATCH_SIZE = get_env_int("BATCH_SIZE", 50)
         self.RECLAIM_AFTER_SECONDS = get_env_int("RECLAIM_AFTER_SECONDS", 900)
         self.MAX_CONCURRENT_NOTIFICATIONS = get_env_int("MAX_CONCURRENT_NOTIFICATIONS", 5)
-        self.PUBSUB_MAX_MESSAGES = get_env_int("PUBSUB_MAX_MESSAGES", 5)
-        self.PUBSUB_MAX_DELIVERY_ATTEMPTS = get_env_int("PUBSUB_MAX_DELIVERY_ATTEMPTS", 5)
-        self.PUBSUB_ACK_EXTENSION_SECONDS = get_env_int("PUBSUB_ACK_EXTENSION_SECONDS", 600)
         self.SUMMARY_LOG_INTERVAL_SECONDS = get_env_float("SUMMARY_LOG_INTERVAL_SECONDS", 300)
-
-        self.PUSH_INGRESS_MODE = get_env("PUSH_INGRESS_MODE", "poll").lower()
-        self.AGENT_MANAGEMENT_BASE_URL = get_secret("AGENT_MANAGEMENT_BASE_URL")
-        self.AGENT_MANAGEMENT_SERVICE_TOKEN = get_secret("AGENT_MANAGEMENT_SERVICE_TOKEN")
 
         self.PG_USE_NULL_POOL = get_env_bool("PG_USE_NULL_POOL", True)
         self.PG_POOL_SIZE = get_env_int("PG_POOL_SIZE", 3)

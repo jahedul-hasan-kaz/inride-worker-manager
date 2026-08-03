@@ -4,25 +4,12 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
-from app.domain.handle_result import HandleDisposition
 from app.domain.models import DeliveryJob, JobKind
-from app.ingress.pubsub_subscriber import _attempts_exhausted, ExpoPushSubscriber
 from app.pipeline.runner import DeliveryRunner
 
 
-def test_attempts_exhausted_threshold(monkeypatch):
-    monkeypatch.setattr(
-        "app.ingress.pubsub_subscriber.config.PUBSUB_MAX_DELIVERY_ATTEMPTS",
-        5,
-    )
-    assert _attempts_exhausted(None) is False
-    assert _attempts_exhausted(4) is False
-    assert _attempts_exhausted(5) is True
-    assert _attempts_exhausted(6) is True
-
-
-def test_execute_job_closes_session_before_expo():
-    """Regression: Expo must not run while a session_scope is entered."""
+def test_execute_job_closes_session_before_pubsub_publish():
+    """Regression: Pub/Sub publish must not run while a session_scope is entered."""
     job = DeliveryJob(
         job_kind=JobKind.IMMEDIATE_SINGLE,
         notification_id=uuid4(),
@@ -36,7 +23,7 @@ def test_execute_job_closes_session_before_expo():
     )
 
     open_scopes = {"count": 0}
-    send_saw_open_scope = {"value": False}
+    publish_saw_open_scope = {"value": False}
 
     class FakeScope:
         def __enter__(self):
@@ -47,12 +34,23 @@ def test_execute_job_closes_session_before_expo():
             open_scopes["count"] -= 1
             return False
 
-    def fake_send(job, target):
-        send_saw_open_scope["value"] = open_scopes["count"] > 0
-        return True, None, False
+    def fake_send_push_batch(items):
+        publish_saw_open_scope["value"] = open_scopes["count"] > 0
+        return SimpleNamespace(
+            sent_count=len(items),
+            failed_count=0,
+            results_by_device={
+                target.device_token_id: SimpleNamespace(
+                    device_token_id=target.device_token_id,
+                    status="sent",
+                    deactivate=False,
+                    error=None,
+                )
+            },
+        )
 
     sender = MagicMock()
-    sender.send.side_effect = fake_send
+    sender.send_push_batch.side_effect = fake_send_push_batch
     runner = DeliveryRunner(sender=sender)
 
     with patch("app.pipeline.runner.session_scope", side_effect=lambda: FakeScope()), patch(
@@ -73,26 +71,7 @@ def test_execute_job_closes_session_before_expo():
     ):
         runner.process_job(job)
 
-    assert send_saw_open_scope["value"] is False
-
-
-def test_ack_exhausted_without_dlq():
-    subscriber = ExpoPushSubscriber(MagicMock(), MagicMock())
-    message = MagicMock()
-
-    subscriber._ack_exhausted(
-        message,
-        reason="missing",
-        attempt=5,
-        payload={"notification_id": str(uuid4())},
-    )
-
-    message.ack.assert_called_once()
-    message.nack.assert_not_called()
-
-
-def test_ack_exhausted_disposition_is_ackable():
-    assert HandleDisposition.ACK_EXHAUSTED.should_ack is True
+    assert publish_saw_open_scope["value"] is False
 
 
 def test_reclaim_does_not_delete_sending_sql():

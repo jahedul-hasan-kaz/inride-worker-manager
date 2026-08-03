@@ -12,10 +12,9 @@ from app.core.config import config
 from app.db.postgres import PostgresClient
 from app.db.session import session_scope
 from app.ingress.pending_poller import PendingPoller
-from app.ingress.pubsub_subscriber import ExpoPushSubscriber
 from app.monitoring.metrics import push_metrics
-from app.services.gcp.pubsub import notification_pubsub, setup_pubsub_publisher
 from app.pipeline.runner import DeliveryRunner
+from app.services.gcp.pubsub import notification_pubsub, setup_pubsub_publisher
 
 
 @asynccontextmanager
@@ -29,8 +28,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     runner = DeliveryRunner()
     semaphore = asyncio.Semaphore(config.MAX_CONCURRENT_NOTIFICATIONS)
     poller = PendingPoller(runner, semaphore)
-    subscriber = ExpoPushSubscriber(runner, semaphore)
-    subscriber_started = False
     summary_task: Optional[asyncio.Task] = None
 
     async def _summary_loop() -> None:
@@ -43,19 +40,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 push_metrics.log_summary()
 
     poller.start()
-    if config.PUSH_INGRESS_MODE == "pubsub":
-        subscriber.start()
-        subscriber_started = True
-        logger.info("Push ingress mode=pubsub (Pub/Sub subscriber enabled)")
-    else:
-        logger.info("Push ingress mode=poll (Pub/Sub subscriber disabled)")
     summary_task = asyncio.create_task(_summary_loop(), name="metrics-summary")
     app.state.runner = runner
     app.state.poller = poller
-    app.state.subscriber = subscriber
     logger.info(
-        "ai-agent-notification started ingress={} poll_interval={}s batch_size={} notification_pubsub_topic={}",
-        config.PUSH_INGRESS_MODE,
+        "ai-agent-notification started poll_interval={}s batch_size={} notification_pubsub_topic={}",
         config.POLL_INTERVAL_SECONDS,
         config.BATCH_SIZE,
         config.NOTIFICATION_PUBSUB_TOPIC_NAME or "(not set)",
@@ -69,8 +58,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             stop_event.set()
         if summary_task is not None:
             summary_task.cancel()
-        if subscriber_started:
-            await subscriber.stop()
         await poller.stop()
         push_metrics.log_summary()
         PostgresClient.close()
@@ -87,21 +74,25 @@ async def health() -> dict:
 
 @app.get("/ready")
 async def ready() -> dict:
-    """Readiness: DB reachable. Pub/Sub config required in non-dev when enabled."""
+    """Readiness: DB reachable and notification Pub/Sub publisher configured."""
     try:
         with session_scope() as session:
             session.execute(text("SELECT 1"))
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"database_unavailable: {exc}") from exc
 
-    pubsub_ok = bool(config.PROJECT_ID and config.EXPO_PUSH_PUBSUB_SUBSCRIPTION)
-    if config.ENV != "dev" and config.PUSH_INGRESS_MODE == "pubsub" and not pubsub_ok:
-        raise HTTPException(status_code=503, detail="pubsub_not_configured")
+    notification_pubsub_ok = bool(
+        config.PROJECT_ID
+        and config.NOTIFICATION_PUBSUB_TOPIC_NAME
+        and notification_pubsub.publisher is not None
+    )
+    if config.ENV != "dev" and not notification_pubsub_ok:
+        raise HTTPException(status_code=503, detail="notification_pubsub_not_configured")
 
     return {
         "status": "ready",
         "service": config.SERVICE_NAME,
-        "pubsub_configured": pubsub_ok,
+        "notification_pubsub_configured": notification_pubsub_ok,
     }
 
 
