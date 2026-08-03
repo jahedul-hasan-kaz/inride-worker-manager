@@ -75,7 +75,7 @@ async def ready() -> dict:
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"database_unavailable: {exc}") from exc
 
-    pubsub_ok = bool(config.PROJECT_ID and config.EXPO_PUSH_PUBSUB_SUBSCRIPTION)
+    pubsub_ok = bool(config.PROJECT_ID and config.NOTIFICATION_PUBSUB_TOPIC_NAME )
     if config.ENV != "dev" and not pubsub_ok:
         raise HTTPException(status_code=503, detail="pubsub_not_configured")
 

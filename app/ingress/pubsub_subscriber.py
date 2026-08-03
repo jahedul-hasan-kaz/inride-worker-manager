@@ -57,7 +57,7 @@ class ExpoPushSubscriber:
 
     @property
     def is_configured(self) -> bool:
-        return bool(config.PROJECT_ID and config.EXPO_PUSH_PUBSUB_SUBSCRIPTION)
+        return bool(config.PROJECT_ID and config.NOTIFICATION_PUBSUB_TOPIC_NAME)
 
     def start(self) -> None:
         if pubsub_v1 is None:
@@ -69,7 +69,7 @@ class ExpoPushSubscriber:
 
         self._loop = asyncio.get_running_loop()
         subscription_path = (
-            f"projects/{config.PROJECT_ID}/subscriptions/{config.EXPO_PUSH_PUBSUB_SUBSCRIPTION}"
+            f"projects/{config.PROJECT_ID}/subscriptions/{config.NOTIFICATION_PUBSUB_TOPIC_NAME}"
         )
         self._subscriber = pubsub_v1.SubscriberClient()
         flow = FlowControl(max_messages=config.PUBSUB_MAX_MESSAGES)

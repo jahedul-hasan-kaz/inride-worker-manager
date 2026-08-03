@@ -77,8 +77,7 @@ Sensitive values are resolved via `get_secret()` in [`app/core/secrets.py`](app/
 | `PROJECT_NUMBER` | — | GCP project number; required when resolving secrets via `*_NAME` from Secret Manager. |
 | `PG_DB_URL` | — | Postgres connection string (notifications DB). Required for the worker and integration tests. Prefer the transaction pooler (`:6543`) with NullPool. |
 | `PG_DB_URL_NAME` | — | GCP Secret Manager secret id for `PG_DB_URL` (prod alternative to plaintext). |
-| `EXPO_PUSH_PUBSUB_TOPIC_NAME` | `expo-push-notifications` | Pub/Sub topic the outbox relay publishes to (management side). Documented here so topic/subscription stay aligned. |
-| `EXPO_PUSH_PUBSUB_SUBSCRIPTION` | `expo-push-notifications-sub` | Pub/Sub subscription this worker pulls from (primary ingress). |
+| `NOTIFICATION_PUBSUB_TOPIC_NAME` | `expo-push-notifications` | Pub/Sub topic the outbox 
 | `EXPO_ACCESS_TOKEN_KEY` | — | Expo push access token for authenticated Expo HTTP API sends. |
 | `EXPO_ACCESS_TOKEN_KEY_NAME` | — | GCP Secret Manager secret id for the Expo token (prod alternative to plaintext). |
 | `POLL_INTERVAL_SECONDS` | `60` | How often the DB fallback poller wakes to claim pending notifications (`SKIP LOCKED`) when Pub/Sub is quiet or messages were dropped. |
