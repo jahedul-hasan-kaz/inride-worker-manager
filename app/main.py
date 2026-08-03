@@ -14,12 +14,18 @@ from app.db.session import session_scope
 from app.ingress.pending_poller import PendingPoller
 from app.ingress.pubsub_subscriber import ExpoPushSubscriber
 from app.monitoring.metrics import push_metrics
+from app.services.gcp.pubsub import notification_pubsub, setup_pubsub_publisher
 from app.pipeline.runner import DeliveryRunner
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     PostgresClient.initialize()
+    setup_pubsub_publisher(
+        notification_pubsub,
+        config.PROJECT_ID or "",
+        config.NOTIFICATION_PUBSUB_TOPIC_NAME,
+    )
     runner = DeliveryRunner()
     semaphore = asyncio.Semaphore(config.MAX_CONCURRENT_NOTIFICATIONS)
     poller = PendingPoller(runner, semaphore)
@@ -48,11 +54,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.poller = poller
     app.state.subscriber = subscriber
     logger.info(
-        "ai-agent-notification started ingress={} poll_interval={}s batch_size={} agent_url={}",
+        "ai-agent-notification started ingress={} poll_interval={}s batch_size={} notification_pubsub_topic={}",
         config.PUSH_INGRESS_MODE,
         config.POLL_INTERVAL_SECONDS,
         config.BATCH_SIZE,
-        config.AGENT_MANAGEMENT_BASE_URL or "(not set)",
+        config.NOTIFICATION_PUBSUB_TOPIC_NAME or "(not set)",
     )
 
     try:

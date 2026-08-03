@@ -1,19 +1,18 @@
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List
 from uuid import UUID
 
 from loguru import logger
-from sqlalchemy import and_, or_
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from app.constants.notification_constants import priority_to_weight
-from app.db.models import DeviceTokenInDB, NotificationConfigInDB, NotificationTenantConfigInDB, UserInDB
+from app.db.models import DeviceTokenInDB, NotificationConfigInDB, UserInDB
 from app.domain.models import DeliveryJob, DeliveryTarget
 from app.eligibility.context import EligibilityContext, StepOutcome, config_from_row
 from app.eligibility.pipeline import evaluate_user
 
-PLATFORM_ADMIN = "platform_admin"
+# PLATFORM_ADMIN = "platform_admin"
 
 
 class RecipientResolver:
@@ -33,6 +32,7 @@ class RecipientResolver:
             .join(UserInDB, UserInDB.id == DeviceTokenInDB.user_id)
             .filter(
                 DeviceTokenInDB.is_active.is_(True),
+                UserInDB.tenant_id == job.tenant_id,
                 or_(
                     UserInDB.is_notify_mobile.is_(True),
                     UserInDB.is_notify_mobile.is_(None),
@@ -44,25 +44,15 @@ class RecipientResolver:
             )
         )
 
+        # Hierarchy — disabled: scope_tenant_id / platform_admin branching
+        # exclude_user_id = job.actor_user_id
+        # actor: Optional[UserInDB] = None
+        # if exclude_user_id is not None:
+        #     actor = session.query(UserInDB).filter(UserInDB.id == exclude_user_id).first()
+        # if actor is None or actor.role != PLATFORM_ADMIN:
+        #     query = query.filter(...)
+
         exclude_user_id = job.actor_user_id
-        actor: Optional[UserInDB] = None
-        if exclude_user_id is not None:
-            actor = session.query(UserInDB).filter(UserInDB.id == exclude_user_id).first()
-
-        if actor is None or actor.role != PLATFORM_ADMIN:
-            query = query.filter(
-                or_(
-                    and_(
-                        or_(
-                            UserInDB.tenant_id == job.tenant_id,
-                            UserInDB.scope_tenant_id == job.tenant_id,
-                        ),
-                        UserInDB.role != PLATFORM_ADMIN,
-                    ),
-                    UserInDB.role == PLATFORM_ADMIN,
-                )
-            )
-
         if exclude_user_id is not None:
             query = query.filter(DeviceTokenInDB.user_id != exclude_user_id)
 
@@ -92,22 +82,11 @@ class RecipientResolver:
         )
         config_by_user = {row.user_id: row for row in config_rows}
 
-        tenant_config_by_user: dict[UUID, NotificationTenantConfigInDB] = {}
-        users_with_per_tenant = [
-            user_id
-            for user_id in devices_by_user
-            if config_by_user.get(user_id) is not None and not config_by_user[user_id].is_all_tenants
-        ]
-        if users_with_per_tenant:
-            tenant_rows = (
-                session.query(NotificationTenantConfigInDB)
-                .filter(
-                    NotificationTenantConfigInDB.tenant_id == job.tenant_id,
-                    NotificationTenantConfigInDB.user_id.in_(users_with_per_tenant),
-                )
-                .all()
-            )
-            tenant_config_by_user = {row.user_id: row for row in tenant_rows}
+        # Hierarchy — disabled: notification_tenants_config per-tenant overrides
+        # tenant_config_by_user: dict[UUID, NotificationTenantConfigInDB] = {}
+        # users_with_per_tenant = [...]
+        # if users_with_per_tenant:
+        #     tenant_rows = session.query(NotificationTenantConfigInDB)...
 
         targets: List[DeliveryTarget] = []
         for user_id, devices in devices_by_user.items():
@@ -119,18 +98,12 @@ class RecipientResolver:
                 user_role=role,
                 config=global_config,
                 devices=devices,
-                tenant_config_row=tenant_config_by_user.get(user_id),
+                tenant_config_row=None,
                 session=session,
             )
             result = evaluate_user(ctx)
             if result.outcome == StepOutcome.SKIP_USER:
                 continue
-
-            delivery_priority = (
-                priority_to_weight(ctx.config.priority)
-                if not global_config.is_all_tenants
-                else 0
-            )
 
             for device in ctx.eligible_devices:
                 token = (device.token or "").strip()
@@ -141,11 +114,10 @@ class RecipientResolver:
                         device_token_id=device.id,
                         push_token=token,
                         user_id=user_id,
-                        notification_priority=delivery_priority,
+                        notification_priority=0,
                     )
                 )
 
-        targets.sort(key=lambda target: target.notification_priority, reverse=True)
         logger.info(
             "Resolved targets notification={} tenant={} type={} candidates={} eligible_devices={}",
             job.notification_id,

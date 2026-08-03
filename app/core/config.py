@@ -41,6 +41,10 @@ class Config:
         self.PG_DB_URL = get_secret("PG_DB_URL")
         self.SQLALCHEMY_ECHO = get_env_bool("SQLALCHEMY_ECHO")
 
+        self.NOTIFICATION_PUBSUB_TOPIC_NAME = get_env(
+            "NOTIFICATION_PUBSUB_TOPIC_NAME",
+            "notification-pubsub",
+        )
         self.EXPO_PUSH_PUBSUB_TOPIC_NAME = get_env(
             "EXPO_PUSH_PUBSUB_TOPIC_NAME",
             "expo-push-notifications",

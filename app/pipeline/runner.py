@@ -10,7 +10,7 @@ from app.domain.handle_result import HandleDisposition, HandleResult
 from app.domain.models import DeliveryJob, DeliveryResult, DeviceSendOutcome, PushStatus
 from app.domain.policies import DeliveryPolicy, ImmediateSingleNotificationPolicy
 from app.monitoring.metrics import push_metrics
-from app.pipeline.agent_management_client import AgentManagementClient
+from app.pipeline.notification_pubsub_client import NotificationPubSubClient
 from app.pipeline.claimer import NotificationClaimer
 from app.pipeline.device_idempotency import DeviceIdempotency
 from app.pipeline.finalizer import NotificationFinalizer
@@ -20,16 +20,16 @@ from app.pipeline.recipient_resolver import RecipientResolver
 
 
 class DeliveryRunner:
-    """Orchestrates eligibility, tracking, and batched Expo delivery via agent-management."""
+    """Orchestrates eligibility, tracking, and push delivery via notification Pub/Sub."""
 
     def __init__(
         self,
         *,
         policy: Optional[DeliveryPolicy] = None,
-        sender: Optional[AgentManagementClient] = None,
+        sender: Optional[NotificationPubSubClient] = None,
     ) -> None:
         self.policy = policy or ImmediateSingleNotificationPolicy()
-        self.sender = sender or AgentManagementClient()
+        self.sender = sender or NotificationPubSubClient()
 
     def handle_notification_id(self, notification_id: UUID) -> HandleResult:
         try:
@@ -111,14 +111,14 @@ class DeliveryRunner:
             return self._finalize_early_only(jobs, early_results)
 
         logger.info(
-            "Sending push batch to agent-management items={} notifications={}",
+            "Publishing push batch to notification Pub/Sub items={} notifications={}",
             len(prepared),
             len({item.job.notification_id for item in prepared}),
         )
         batch_response = self.sender.send_push_batch([item.payload for item in prepared])
         results_by_device = batch_response.results_by_device
         logger.info(
-            "Agent push batch result sent={} failed={}",
+            "Notification Pub/Sub batch result sent={} failed={}",
             batch_response.sent_count,
             batch_response.failed_count,
         )

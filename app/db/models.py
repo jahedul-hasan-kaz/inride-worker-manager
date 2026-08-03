@@ -138,9 +138,9 @@ class LeadUserFlagInDB(Base):
     __tablename__ = "lead_user_flags"
     __table_args__ = {"schema": "public"}
 
-    id = Column(UUID(as_uuid=True), primary_key=True)
-    lead_id = Column(UUID(as_uuid=True), nullable=False)
-    user_id = Column(UUID(as_uuid=True), nullable=False)
+    lead_id = Column(UUID(as_uuid=True), primary_key=True, nullable=False)
+    user_id = Column(UUID(as_uuid=True), primary_key=True, nullable=False)
+    date_flagged = Column(DateTime, nullable=False, server_default=text("NOW()"))
 
 
 class NotificationPushDeliveryInDB(Base):
