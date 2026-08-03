@@ -1,0 +1,57 @@
+name: Deploy to QA
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag to deploy (e.g., 1.0.0)'
+        required: true
+        type: string
+
+jobs:
+  clone-and-deploy:
+    runs-on: ubuntu-latest
+    environment: qa
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Pull and push to QA GCR
+        run: |
+          # Authenticate to Kitchen GCR
+          echo '${{ secrets.SERVICE_ACCOUNT_KITCHEN }}' | docker login -u _json_key --password-stdin https://gcr.io
+          
+          # Pull image from kitchen
+          docker pull gcr.io/${{ secrets.PROJECT_ID_KITCHEN }}/${{ secrets.GCR_REPO }}:${{ github.event.inputs.tag }}
+          
+          # Get image ID
+          image_id=$(docker images -q | head -n1)
+          echo "Image ID: $image_id"
+          
+          # Authenticate to QA GCR
+          echo '${{ secrets.SERVICE_ACCOUNT_QA }}' | docker login -u _json_key --password-stdin https://gcr.io
+          
+          # Tag and push to QA GCR
+          docker tag $image_id gcr.io/${{ secrets.PROJECT_ID_QA }}/${{ secrets.GCR_REPO }}/${{ github.event.inputs.tag }}:${{ github.event.inputs.tag }}
+          docker push gcr.io/${{ secrets.PROJECT_ID_QA }}/${{ secrets.GCR_REPO }}/${{ github.event.inputs.tag }}:${{ github.event.inputs.tag }}
+
+      - name: Deploy to Cloud Run QA
+        env:
+          IMAGE_TAG: ${{ github.event.inputs.tag }}
+          PROJECT_ID: ${{ secrets.PROJECT_ID_QA }}
+          GCR_REPO: ${{ secrets.GCR_REPO }}
+        run: |
+          # Authenticate to GCP for QA
+          echo '${{ secrets.SERVICE_ACCOUNT_QA }}' > /tmp/${{ github.run_id }}.json
+          gcloud auth activate-service-account --key-file /tmp/${{ github.run_id }}.json
+          gcloud config set project ${{ secrets.PROJECT_ID_QA }}
+          
+          # Set test environment for QA
+          sed -i 's/^IS_TEST_ENV=.*/IS_TEST_ENV=1/' .env
+          
+          # Run GitHub deployment script
+          chmod +x ./scripts/deploy-github.sh
+          bash ./scripts/deploy-github.sh
+          
+          # Cleanup
+          rm -f /tmp/${{ github.run_id }}.json
