@@ -1,0 +1,32 @@
+name: Build and Push to Kitchen GCR
+
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.SERVICE_ACCOUNT_KITCHEN }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for GCR
+        run: gcloud auth configure-docker
+
+      - name: Build and push Docker image to Kitchen GCR
+        run: |
+          gcloud config set project ${{ secrets.PROJECT_ID_KITCHEN }}
+          gcloud builds submit \
+            --tag gcr.io/${{ secrets.PROJECT_ID_KITCHEN }}/${{ secrets.GCR_REPO }}:${{ github.ref_name }} \
+            --timeout=1800s
+        timeout-minutes: 30
