@@ -47,7 +47,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.runner = runner
     app.state.poller = poller
     app.state.subscriber = subscriber
-    logger.info("ai-agent-notification started")
+    logger.info(
+        "ai-agent-notification started ingress={} poll_interval={}s batch_size={} agent_url={}",
+        config.PUSH_INGRESS_MODE,
+        config.POLL_INTERVAL_SECONDS,
+        config.BATCH_SIZE,
+        config.AGENT_MANAGEMENT_BASE_URL or "(not set)",
+    )
 
     try:
         yield

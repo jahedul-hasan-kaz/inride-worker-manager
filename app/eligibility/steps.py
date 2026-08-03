@@ -2,13 +2,12 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from loguru import logger
 from sqlalchemy import and_, case, exists, select
 from sqlalchemy.orm import Session, aliased
 
 from app.constants.notification_constants import MessageDirection, NotificationType, PlatformOs
 from app.db.models import EmailLogInDB, LeadInDB, LeadUserFlagInDB, SMSLogInDB, TenantInDB
-from app.eligibility.context import EligibilityContext, StepOutcome, StepResult
+from app.eligibility.context import EligibilityContext, StepOutcome, StepResult, EffectiveConfig, tenant_config_from_row
 
 PLATFORM_ADMIN = "platform_admin"
 
@@ -23,12 +22,26 @@ def step_tenant_scope(ctx: EligibilityContext) -> StepResult:
     if ctx.config.is_all_tenants:
         return StepResult(outcome=StepOutcome.CONTINUE)
 
-    logger.debug(
-        "Per-tenant notification config not implemented for user {} tenant {}; skipping",
-        ctx.user_id,
-        ctx.job.tenant_id,
+    if ctx.job.tenant_id is None:
+        return StepResult(outcome=StepOutcome.SKIP_USER, reason="missing_tenant_id")
+
+    tenant_config = tenant_config_from_row(ctx.tenant_config_row)
+    if tenant_config.is_block:
+        return StepResult(outcome=StepOutcome.SKIP_USER, reason="tenant_blocked")
+
+    ctx.config = EffectiveConfig(
+        is_enable=ctx.config.is_enable,
+        is_all_tenants=False,
+        is_in_flagged=tenant_config.is_in_flagged,
+        is_manual_sms=tenant_config.is_manual_sms,
+        is_manual_email=tenant_config.is_manual_email,
+        is_sms_enable=tenant_config.is_sms_enable,
+        is_email_enable=tenant_config.is_email_enable,
+        platform_os=tenant_config.platform_os,
+        priority=tenant_config.priority,
+        is_block=False,
     )
-    return StepResult(outcome=StepOutcome.SKIP_USER, reason="tenant_config_not_implemented")
+    return StepResult(outcome=StepOutcome.CONTINUE)
 
 
 def step_channel_enable(ctx: EligibilityContext) -> StepResult:

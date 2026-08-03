@@ -38,6 +38,11 @@ class DeliveryRunner:
 
             if job is None:
                 if miss_status in (PushStatus.SENT.value, PushStatus.FAILED.value):
+                    logger.info(
+                        "Notification {} already done status={}",
+                        notification_id,
+                        miss_status,
+                    )
                     return HandleResult(
                         disposition=HandleDisposition.ACK_ALREADY_DONE,
                         detail=miss_status,
@@ -70,64 +75,53 @@ class DeliveryRunner:
         return results[0]
 
     def process_batch(self, jobs: List[DeliveryJob]) -> List[DeliveryResult]:
+        logger.info("Processing push batch size={}", len(jobs))
         prepared: List[PreparedPush] = []
         early_results: dict[UUID, DeliveryResult] = {}
 
         for job in jobs:
-            if not self.policy.should_deliver(job):
-                skip = self.policy.skip_status(job) or PushStatus.FAILED
+            try:
+                self._prepare_job(job, prepared, early_results)
+            except Exception as exc:
+                logger.exception(
+                    "Failed preparing notification={} tenant={}: {}",
+                    job.notification_id,
+                    job.tenant_id,
+                    exc,
+                )
                 with session_scope() as session:
                     NotificationFinalizer.finalize(
                         session,
                         job,
-                        status=skip,
-                        error="skipped_by_policy",
+                        status=PushStatus.FAILED,
+                        error=str(exc)[:500],
                     )
                 early_results[job.notification_id] = DeliveryResult(
                     job=job,
-                    notification_status=skip,
-                    error="skipped_by_policy",
-                )
-                continue
-
-            with session_scope() as session:
-                targets = RecipientResolver.resolve(session, job)
-
-            if not targets:
-                with session_scope() as session:
-                    NotificationFinalizer.finalize(session, job, status=PushStatus.SENT)
-                early_results[job.notification_id] = DeliveryResult(
-                    job=job,
-                    notification_status=PushStatus.SENT,
-                    device_outcomes=[],
-                )
-                continue
-
-            for target in targets:
-                with session_scope() as session:
-                    claimed = DeviceIdempotency.try_claim(session, job, target)
-
-                if not claimed:
-                    push_metrics.device_attempted("skipped")
-                    early_results.setdefault(
-                        job.notification_id,
-                        DeliveryResult(job=job, notification_status=PushStatus.SENT),
-                    )
-                    early_results[job.notification_id].device_outcomes.append(
-                        DeviceSendOutcome(device_token_id=target.device_token_id, result="skipped")
-                    )
-                    continue
-
-                prepared.append(
-                    PreparedPush(
-                        job=job,
-                        target=target,
-                        payload=build_push_item(job, target),
-                    )
+                    notification_status=PushStatus.FAILED,
+                    error=str(exc),
                 )
 
+        if not prepared:
+            logger.info(
+                "Push batch has no items to send (jobs={} early_results={})",
+                len(jobs),
+                len(early_results),
+            )
+            return self._finalize_early_only(jobs, early_results)
+
+        logger.info(
+            "Sending push batch to agent-management items={} notifications={}",
+            len(prepared),
+            len({item.job.notification_id for item in prepared}),
+        )
         batch_response = self.sender.send_push_batch([item.payload for item in prepared])
         results_by_device = batch_response.results_by_device
+        logger.info(
+            "Agent push batch result sent={} failed={}",
+            batch_response.sent_count,
+            batch_response.failed_count,
+        )
 
         outcomes_by_job: dict[UUID, list[DeviceSendOutcome]] = {}
         for job_id, early in early_results.items():
@@ -205,6 +199,18 @@ class DeliveryRunner:
                     job.notification_id,
                     len(outcomes),
                 )
+            else:
+                sent = sum(1 for o in outcomes if o.result == "sent")
+                failed = sum(1 for o in outcomes if o.result == "failed")
+                skipped = sum(1 for o in outcomes if o.result == "skipped")
+                logger.info(
+                    "Notification {} finalized status={} sent={} failed={} skipped={}",
+                    job.notification_id,
+                    status.value,
+                    sent,
+                    failed,
+                    skipped,
+                )
 
             delivery_results.append(
                 DeliveryResult(
@@ -215,4 +221,92 @@ class DeliveryRunner:
                 )
             )
 
+        return delivery_results
+
+    def _prepare_job(
+        self,
+        job: DeliveryJob,
+        prepared: List[PreparedPush],
+        early_results: dict[UUID, DeliveryResult],
+    ) -> None:
+        logger.info(
+            "Evaluating notification={} tenant={} type={} direction={}",
+            job.notification_id,
+            job.tenant_id,
+            job.notification_type,
+            job.direction,
+        )
+        if not self.policy.should_deliver(job):
+            skip = self.policy.skip_status(job) or PushStatus.FAILED
+            with session_scope() as session:
+                NotificationFinalizer.finalize(
+                    session,
+                    job,
+                    status=skip,
+                    error="skipped_by_policy",
+                )
+            early_results[job.notification_id] = DeliveryResult(
+                job=job,
+                notification_status=skip,
+                error="skipped_by_policy",
+            )
+            logger.info("Notification {} skipped by policy", job.notification_id)
+            return
+
+        with session_scope() as session:
+            targets = RecipientResolver.resolve(session, job)
+
+        if not targets:
+            with session_scope() as session:
+                NotificationFinalizer.finalize(session, job, status=PushStatus.SENT)
+            early_results[job.notification_id] = DeliveryResult(
+                job=job,
+                notification_status=PushStatus.SENT,
+                device_outcomes=[],
+            )
+            logger.info(
+                "Notification {} finalized sent with no eligible devices",
+                job.notification_id,
+            )
+            return
+
+        for target in targets:
+            with session_scope() as session:
+                claimed = DeviceIdempotency.try_claim(session, job, target)
+
+            if not claimed:
+                push_metrics.device_attempted("skipped")
+                early_results.setdefault(
+                    job.notification_id,
+                    DeliveryResult(job=job, notification_status=PushStatus.SENT),
+                )
+                early_results[job.notification_id].device_outcomes.append(
+                    DeviceSendOutcome(device_token_id=target.device_token_id, result="skipped")
+                )
+                continue
+
+            prepared.append(
+                PreparedPush(
+                    job=job,
+                    target=target,
+                    payload=build_push_item(job, target),
+                )
+            )
+
+    def _finalize_early_only(
+        self,
+        jobs: List[DeliveryJob],
+        early_results: dict[UUID, DeliveryResult],
+    ) -> List[DeliveryResult]:
+        delivery_results: List[DeliveryResult] = []
+        for job in jobs:
+            early = early_results.get(job.notification_id)
+            if early is None:
+                continue
+            if early.notification_status == PushStatus.SENT and not any(
+                o.result == "sent" for o in early.device_outcomes
+            ):
+                with session_scope() as session:
+                    DeviceIdempotency.seal_open_sending(session, job)
+            delivery_results.append(early)
         return delivery_results

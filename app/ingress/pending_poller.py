@@ -70,7 +70,16 @@ class PendingPoller:
             session.close()
 
         if not jobs:
+            logger.debug("Poll tick: no pending notifications")
             return
+
+        notification_ids = [str(job.notification_id) for job in jobs]
+        logger.info(
+            "Poll tick claimed {} notification(s): {}",
+            len(jobs),
+            notification_ids,
+        )
 
         async with self.semaphore:
             await asyncio.to_thread(self.runner.process_batch, jobs)
+        logger.info("Poll tick completed for {} notification(s)", len(jobs))

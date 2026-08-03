@@ -122,11 +122,11 @@ def test_device_idempotency_second_claim_is_rejected():
                 """
                 INSERT INTO public.users (
                     id, email, first_name, last_name, role, tenant_id,
-                    is_disabled, is_notify_mobile, notification_priority,
+                    is_disabled, is_notify_mobile,
                     created_at, updated_at
                 ) VALUES (
                     :id, :email, 'I', 'Test', 'user', :tenant_id,
-                    false, true, 0, NOW(), NOW()
+                    false, true, NOW(), NOW()
                 )
                 """
             ),

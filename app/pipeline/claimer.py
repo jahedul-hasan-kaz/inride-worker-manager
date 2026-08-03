@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import List, Optional, Tuple
 from uuid import UUID
 
+from loguru import logger
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -108,8 +109,10 @@ class NotificationClaimer:
         ids = [row[0] for row in result.fetchall()]
         session.commit()
         if not ids:
+            logger.debug("Claim batch: no pending notifications")
             return []
 
+        logger.info("Claimed {} pending notification(s): {}", len(ids), [str(i) for i in ids])
         push_metrics.claim("won", amount=len(ids))
 
         rows = (

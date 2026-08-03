@@ -42,7 +42,6 @@ class UserInDB(Base):
     role = Column(String, nullable=False)
     is_disabled = Column(Boolean, default=False)
     is_notify_mobile = Column(Boolean, default=True)
-    notification_priority = Column(Integer, nullable=False, server_default=text("0"))
 
 
 class DeviceTokenInDB(Base):

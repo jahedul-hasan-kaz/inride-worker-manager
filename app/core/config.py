@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import logging
+import sys
 
 from loguru import logger
 
@@ -12,6 +12,22 @@ from app.core.env import (
     get_project_id,
 )
 from app.core.secrets import get_secret
+
+
+def configure_logging(level_name: str) -> None:
+    """Apply log level to loguru (default stderr handler)."""
+    level = level_name.upper()
+    logger.remove()
+    logger.add(
+        sys.stderr,
+        level=level,
+        format=(
+            "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
+            "<level>{level: <8}</level> | "
+            "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - "
+            "<level>{message}</level>"
+        ),
+    )
 
 
 class Config:
@@ -45,7 +61,7 @@ class Config:
         self.SUMMARY_LOG_INTERVAL_SECONDS = get_env_float("SUMMARY_LOG_INTERVAL_SECONDS", 300)
 
         self.PUSH_INGRESS_MODE = get_env("PUSH_INGRESS_MODE", "poll").lower()
-        self.AGENT_MANAGEMENT_BASE_URL = get_env("AGENT_MANAGEMENT_BASE_URL", "")
+        self.AGENT_MANAGEMENT_BASE_URL = get_secret("AGENT_MANAGEMENT_BASE_URL")
         self.AGENT_MANAGEMENT_SERVICE_TOKEN = get_secret("AGENT_MANAGEMENT_SERVICE_TOKEN")
 
         self.PG_USE_NULL_POOL = get_env_bool("PG_USE_NULL_POOL", True)
@@ -53,10 +69,12 @@ class Config:
         self.PG_MAX_OVERFLOW = get_env_int("PG_MAX_OVERFLOW", 2)
         self.PG_POOL_RECYCLE = get_env_int("PG_POOL_RECYCLE", 300)
 
-        self.LOG_LEVEL = logging.DEBUG if self.ENV == "dev" else logging.INFO
+        default_level = "DEBUG" if self.ENV == "dev" else "INFO"
+        self.LOG_LEVEL = get_env("LOG_LEVEL", default_level).upper()
 
 
 config = Config()
+configure_logging(config.LOG_LEVEL)
 logger.info(
     "Worker config loaded env={} poll={}s concurrency={}",
     config.ENV,

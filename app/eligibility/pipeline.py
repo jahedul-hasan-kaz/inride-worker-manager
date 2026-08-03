@@ -25,9 +25,24 @@ STEP_REGISTRY: List[tuple[str, StepFn]] = [
 
 
 def evaluate_user(ctx: EligibilityContext) -> StepResult:
+    from loguru import logger
+
     for step_name, step_fn in STEP_REGISTRY:
         result = step_fn(ctx)
         if result.outcome == StepOutcome.SKIP_USER:
             ctx.skip_reason = result.reason or step_name
+            logger.info(
+                "Eligibility skip notification={} user={} step={} reason={}",
+                ctx.job.notification_id,
+                ctx.user_id,
+                step_name,
+                ctx.skip_reason,
+            )
             return result
+    logger.info(
+        "Eligibility pass notification={} user={} devices={}",
+        ctx.job.notification_id,
+        ctx.user_id,
+        len(ctx.eligible_devices),
+    )
     return StepResult(outcome=StepOutcome.CONTINUE)
