@@ -22,27 +22,33 @@ STEP_REGISTRY: List[tuple[str, StepFn]] = [
     ("platform_filter", step_platform_filter),
 ]
 
+STEP_REGISTRY_JOB_GATED: List[tuple[str, StepFn]] = [
+    ("platform_filter", step_platform_filter),
+]
+
 
 def evaluate_user(ctx: EligibilityContext) -> StepResult:
-    from loguru import logger
+    trace = ctx.trace
+    device_count = len(ctx.devices)
+    steps = STEP_REGISTRY_JOB_GATED if ctx.job_gated else STEP_REGISTRY
 
-    for step_name, step_fn in STEP_REGISTRY:
+    for step_name, step_fn in steps:
         result = step_fn(ctx)
         if result.outcome == StepOutcome.SKIP_USER:
             ctx.skip_reason = result.reason or step_name
-            logger.info(
-                "Eligibility skip notification={} user={} step={} reason={}",
-                ctx.job.notification_id,
-                ctx.user_id,
-                step_name,
-                ctx.skip_reason,
-            )
+            if trace is not None:
+                trace.ineligible_user(
+                    user_id=ctx.user_id,
+                    devices=device_count,
+                    reason=ctx.skip_reason,
+                )
             return result
-    logger.info(
-        "Eligibility pass notification={} user={} devices={} include_reasons={}",
-        ctx.job.notification_id,
-        ctx.user_id,
-        len(ctx.eligible_devices),
-        ctx.include_reasons,
-    )
+
+    if trace is not None:
+        trace.eligible_user(
+            user_id=ctx.user_id,
+            devices=device_count,
+            active_devices=len(ctx.eligible_devices),
+            reasons=list(ctx.include_reasons),
+        )
     return StepResult(outcome=StepOutcome.CONTINUE)

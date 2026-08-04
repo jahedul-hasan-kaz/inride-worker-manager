@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
 from uuid import UUID
 
@@ -10,6 +11,14 @@ from app.constants.notification_constants import MessageDirection, NotificationT
 from app.db.models import EmailLogInDB, LeadInDB, LeadUserFlagInDB, SMSLogInDB
 from app.domain.models import DeliveryJob
 from app.eligibility.context import EffectiveConfig
+
+
+@dataclass(frozen=True)
+class ConversationMatchContext:
+    """Cached conversation match for one notification job."""
+
+    flagged_user_ids: Set[UUID]
+    manual_user_id: Optional[UUID]
 
 
 def _parse_sent_by_user_id(sent_by: str | None) -> Optional[UUID]:
@@ -216,6 +225,70 @@ def _manual_reply_enabled_for_job(config: EffectiveConfig, job: DeliveryJob) -> 
     return False
 
 
+def channel_enabled_for_job(config: EffectiveConfig, job: DeliveryJob) -> bool:
+    notification_type = (job.notification_type or "").lower()
+    if notification_type == NotificationType.SMS.value:
+        return config.is_sms_enable
+    if notification_type == NotificationType.EMAIL.value:
+        return config.is_email_enable
+    return True
+
+
+def conversation_paths_enabled(config: EffectiveConfig, job: DeliveryJob) -> bool:
+    notification_type = (job.notification_type or "").lower()
+    if notification_type == NotificationType.EMAIL.value:
+        return config.is_manual_email
+    if notification_type == NotificationType.SMS.value:
+        return config.is_in_flagged or config.is_manual_sms
+    return False
+
+
+def load_conversation_match_context(
+    session: Session,
+    job: DeliveryJob,
+) -> ConversationMatchContext:
+    flagged_user_ids, manual_user_id = get_conversation_match_summary(session, job)
+    return ConversationMatchContext(
+        flagged_user_ids=flagged_user_ids,
+        manual_user_id=manual_user_id,
+    )
+
+
+def build_candidate_reasons_from_match(
+    match: ConversationMatchContext,
+) -> Dict[UUID, List[str]]:
+    reasons_by_user: Dict[UUID, List[str]] = {}
+    for user_id in match.flagged_user_ids:
+        reasons_by_user.setdefault(user_id, []).append("flagged")
+    if match.manual_user_id is not None:
+        reasons_by_user.setdefault(match.manual_user_id, []).append("manual_reply")
+    return reasons_by_user
+
+
+def get_user_include_reasons_cached(
+    job: DeliveryJob,
+    user_id: UUID,
+    config: EffectiveConfig,
+    match: ConversationMatchContext,
+) -> List[str]:
+    """Why this user is eligible, using pre-fetched conversation match."""
+    reasons: List[str] = []
+    notification_type = (job.notification_type or "").lower()
+
+    if notification_type != NotificationType.EMAIL.value:
+        if config.is_in_flagged and user_id in match.flagged_user_ids:
+            reasons.append("flagged")
+
+    if (
+        match.manual_user_id is not None
+        and match.manual_user_id == user_id
+        and _manual_reply_enabled_for_job(config, job)
+    ):
+        reasons.append("manual_reply")
+
+    return reasons
+
+
 def get_user_include_reasons(
     session: Session,
     job: DeliveryJob,
@@ -223,24 +296,8 @@ def get_user_include_reasons(
     config: EffectiveConfig,
 ) -> List[str]:
     """Why this user is eligible, respecting their notification_config preferences."""
-    reasons: List[str] = []
-    notification_type = (job.notification_type or "").lower()
-
-    if notification_type != NotificationType.EMAIL.value:
-        if config.is_in_flagged and user_id in get_flagged_user_ids_for_notification(
-            session, job
-        ):
-            reasons.append("flagged")
-
-    manual_user_id = get_manual_reply_user_id(session, job)
-    if (
-        manual_user_id is not None
-        and manual_user_id == user_id
-        and _manual_reply_enabled_for_job(config, job)
-    ):
-        reasons.append("manual_reply")
-
-    return reasons
+    match = load_conversation_match_context(session, job)
+    return get_user_include_reasons_cached(job, user_id, config, match)
 
 
 def get_conversation_match_summary(
@@ -260,16 +317,7 @@ def get_conversation_candidate_reasons(
     job: DeliveryJob,
 ) -> Dict[UUID, List[str]]:
     """Potential conversation matches used to discover device tokens (pre-config)."""
-    reasons_by_user: Dict[UUID, List[str]] = {}
-    flagged_user_ids, manual_user_id = get_conversation_match_summary(session, job)
-
-    for user_id in flagged_user_ids:
-        reasons_by_user.setdefault(user_id, []).append("flagged")
-
-    if manual_user_id is not None:
-        reasons_by_user.setdefault(manual_user_id, []).append("manual_reply")
-
-    return reasons_by_user
+    return build_candidate_reasons_from_match(load_conversation_match_context(session, job))
 
 
 def get_conversation_candidate_user_ids(
@@ -289,25 +337,27 @@ def is_reply_to_user_manual_conversation(
     return manual_user_id is not None and manual_user_id == user_id
 
 
-def evaluate_conversation_eligibility(
+def evaluate_conversation_eligibility_cached(
     session: Session,
     job: DeliveryJob,
     user_id: UUID,
     config: EffectiveConfig,
+    match: ConversationMatchContext,
 ) -> Tuple[bool, Optional[str], List[str]]:
     if job.tenant_id is None:
         return False, "missing_tenant_id", []
 
-    include_reasons = get_user_include_reasons(session, job, user_id, config)
+    include_reasons = get_user_include_reasons_cached(job, user_id, config, match)
     if include_reasons:
         return True, None, include_reasons
 
     notification_type = (job.notification_type or "").lower()
-    flagged_user_ids: Set[UUID] = set()
-    if notification_type != NotificationType.EMAIL.value:
-        flagged_user_ids = get_flagged_user_ids_for_notification(session, job)
-
-    manual_user_id = get_manual_reply_user_id(session, job)
+    flagged_user_ids = (
+        set()
+        if notification_type == NotificationType.EMAIL.value
+        else set(match.flagged_user_ids)
+    )
+    manual_user_id = match.manual_user_id
     manual_enabled = _manual_reply_enabled_for_job(config, job)
 
     if notification_type == NotificationType.EMAIL.value:
@@ -329,11 +379,11 @@ def evaluate_conversation_eligibility(
             f"lead_not_found:thread_id={job.thread_id!r},sms_log_id={job.sms_log_id}"
         ), []
 
-    if user_id in flagged_user_ids and not config.is_in_flagged:
-        return False, "flagged_disabled_in_config", []
-
     if manual_user_id == user_id and not manual_enabled:
         return False, "manual_reply_disabled_in_config", []
+
+    if user_id in flagged_user_ids and not config.is_in_flagged:
+        return False, "flagged_disabled_in_config", []
 
     if (job.direction or "").lower() != MessageDirection.INBOUND.value:
         return False, (
@@ -351,6 +401,18 @@ def evaluate_conversation_eligibility(
         f"direction={job.direction!r},"
         f"manual_reply_user={manual_user_id}"
     ), []
+
+
+def evaluate_conversation_eligibility(
+    session: Session,
+    job: DeliveryJob,
+    user_id: UUID,
+    config: EffectiveConfig,
+) -> Tuple[bool, Optional[str], List[str]]:
+    match = load_conversation_match_context(session, job)
+    return evaluate_conversation_eligibility_cached(
+        session, job, user_id, config, match
+    )
 
 
 def should_notify_user_for_conversation(

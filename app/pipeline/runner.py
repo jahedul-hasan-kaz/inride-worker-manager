@@ -16,6 +16,7 @@ from app.pipeline.device_idempotency import DeviceIdempotency
 from app.pipeline.finalizer import NotificationFinalizer
 from app.pipeline.push_message_builder import build_push_item
 from app.pipeline.push_types import PreparedPush
+from app.pipeline.push_trace import PushTrace
 from app.pipeline.recipient_resolver import RecipientResolver
 
 
@@ -78,10 +79,11 @@ class DeliveryRunner:
         logger.info("Processing push batch size={}", len(jobs))
         prepared: List[PreparedPush] = []
         early_results: dict[UUID, DeliveryResult] = {}
+        traces: dict[UUID, PushTrace] = {}
 
         for job in jobs:
             try:
-                self._prepare_job(job, prepared, early_results)
+                self._prepare_job(job, prepared, early_results, traces)
             except Exception as exc:
                 logger.exception(
                     "Failed preparing notification={} tenant={}: {}",
@@ -161,6 +163,7 @@ class DeliveryRunner:
         delivery_results: List[DeliveryResult] = []
 
         for job in jobs:
+            trace = traces.get(job.notification_id)
             if job.notification_id in early_results and not any(
                 p.job.notification_id == job.notification_id for p in prepared
             ):
@@ -175,6 +178,7 @@ class DeliveryRunner:
                 continue
 
             outcomes = outcomes_by_job.get(job.notification_id, [])
+            job_prepared = [p for p in prepared if p.job.notification_id == job.notification_id]
             job_deactivated = [
                 token_id
                 for token_id in deactivated_ids
@@ -193,23 +197,26 @@ class DeliveryRunner:
                 finalize_error = None if any_sent else "all_device_sends_failed"
                 NotificationFinalizer.finalize(session, job, status=status, error=finalize_error)
 
+            sent = sum(1 for o in outcomes if o.result == "sent")
+            failed = sum(1 for o in outcomes if o.result == "failed")
+            skipped = sum(1 for o in outcomes if o.result == "skipped")
+
+            if trace is not None and job_prepared:
+                trace.publish(count=len(job_prepared))
+                trace.complete(
+                    publish_count=len(job_prepared),
+                    resolved_devices=len(outcomes) or len(job_prepared),
+                    sent=sent,
+                    failed=failed,
+                    skipped=skipped,
+                    status=status.value,
+                )
+
             if status == PushStatus.FAILED and outcomes:
                 logger.warning(
                     "Notification {} finalized failed after {} device attempt(s)",
                     job.notification_id,
                     len(outcomes),
-                )
-            else:
-                sent = sum(1 for o in outcomes if o.result == "sent")
-                failed = sum(1 for o in outcomes if o.result == "failed")
-                skipped = sum(1 for o in outcomes if o.result == "skipped")
-                logger.info(
-                    "Notification {} finalized status={} sent={} failed={} skipped={}",
-                    job.notification_id,
-                    status.value,
-                    sent,
-                    failed,
-                    skipped,
                 )
 
             delivery_results.append(
@@ -228,14 +235,16 @@ class DeliveryRunner:
         job: DeliveryJob,
         prepared: List[PreparedPush],
         early_results: dict[UUID, DeliveryResult],
+        traces: dict[UUID, PushTrace],
     ) -> None:
-        logger.info(
-            "Evaluating notification={} tenant={} type={} direction={}",
-            job.notification_id,
-            job.tenant_id,
-            job.notification_type,
-            job.direction,
+        trace = PushTrace(job.notification_id)
+        traces[job.notification_id] = trace
+        trace.start(
+            notification_type=job.notification_type,
+            direction=job.direction,
+            tenant_id=job.tenant_id,
         )
+
         if not self.policy.should_deliver(job):
             skip = self.policy.skip_status(job) or PushStatus.FAILED
             with session_scope() as session:
@@ -250,11 +259,12 @@ class DeliveryRunner:
                 notification_status=skip,
                 error="skipped_by_policy",
             )
-            logger.info("Notification {} skipped by policy", job.notification_id)
+            trace.policy_skip(status=skip.value)
+            trace.complete(publish_count=0, resolved_devices=0, status=skip.value)
             return
 
         with session_scope() as session:
-            targets = RecipientResolver.resolve(session, job)
+            targets = RecipientResolver.resolve(session, job, trace=trace)
 
         if not targets:
             with session_scope() as session:
@@ -264,16 +274,17 @@ class DeliveryRunner:
                 notification_status=PushStatus.SENT,
                 device_outcomes=[],
             )
-            logger.info(
-                "Notification {} finalized sent with no eligible devices",
-                job.notification_id,
-            )
+            trace.complete(publish_count=0, resolved_devices=0, status=PushStatus.SENT.value)
             return
 
+        trace.idempotency()
         skipped_targets = 0
+        prepared_before = len(prepared)
         for target in targets:
             with session_scope() as session:
                 claimed = DeviceIdempotency.try_claim(session, job, target)
+
+            trace.idempotency_claim(device_token_id=target.device_token_id, claimed=claimed)
 
             if not claimed:
                 skipped_targets += 1
@@ -295,20 +306,19 @@ class DeliveryRunner:
                 )
             )
 
-        if not prepared and targets:
-            logger.info(
-                "Notification {} resolved {} device target(s) but all skipped by idempotency "
-                "(already sent or in-flight for this notification)",
-                job.notification_id,
-                len(targets),
-            )
-        elif skipped_targets:
-            logger.info(
-                "Notification {} prepared={} skipped_by_idempotency={} total_targets={}",
-                job.notification_id,
-                len(prepared),
-                skipped_targets,
-                len(targets),
+        prepared_for_job = len(prepared) - prepared_before
+        trace.idempotency_skip(
+            prepared=prepared_for_job,
+            skipped=skipped_targets,
+            total=len(targets),
+        )
+
+        if prepared_for_job == 0:
+            trace.complete(
+                publish_count=0,
+                resolved_devices=len(targets),
+                skipped=skipped_targets,
+                status=PushStatus.SENT.value,
             )
 
     def _finalize_early_only(

@@ -1,22 +1,26 @@
 from __future__ import annotations
 
-from typing import List
+from typing import Dict, List, Optional, Set
 from uuid import UUID
 
-from loguru import logger
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from app.constants.notification_constants import MessageDirection
-from app.db.models import DeviceTokenInDB, NotificationConfigInDB, UserInDB
+from app.constants.notification_constants import MessageDirection, NotificationType
+from app.db.models import DeviceTokenInDB, UserInDB
 from app.domain.models import DeliveryJob, DeliveryTarget
-from app.eligibility.context import EligibilityContext, StepOutcome, config_from_row
+from app.eligibility.context import EligibilityContext, StepOutcome
 from app.eligibility.conversation_eligibility import (
-    get_conversation_candidate_reasons,
-    get_conversation_match_summary,
+    build_candidate_reasons_from_match,
+    channel_enabled_for_job,
+    conversation_paths_enabled,
+    evaluate_conversation_eligibility_cached,
+    load_conversation_match_context,
     resolve_lead_ids_for_notification,
 )
+from app.eligibility.notification_config_resolver import resolve_effective_config_for_job
 from app.eligibility.pipeline import evaluate_user
+from app.pipeline.push_trace import PushTrace
 
 # PLATFORM_ADMIN = "platform_admin"
 
@@ -25,36 +29,107 @@ class RecipientResolver:
     """Resolve Expo targets after per-user eligibility pipeline."""
 
     @staticmethod
-    def resolve(session: Session, job: DeliveryJob) -> List[DeliveryTarget]:
+    def resolve(
+        session: Session,
+        job: DeliveryJob,
+        *,
+        trace: Optional[PushTrace] = None,
+    ) -> List[DeliveryTarget]:
         if job.tenant_id is None:
+            if trace is not None:
+                trace.skipped(reason="missing_tenant_id")
             return []
 
-        flagged_users, manual_reply_user = get_conversation_match_summary(session, job)
-        candidate_reasons = get_conversation_candidate_reasons(session, job)
-        candidate_user_ids = set(candidate_reasons.keys())
+        if trace is not None:
+            trace.resolve_config()
+
+        effective_config, config_source = resolve_effective_config_for_job(session, job)
+        if trace is not None:
+            trace.config_resolved(
+                source=config_source,
+                is_enable=effective_config.is_enable,
+                is_all_tenants=effective_config.is_all_tenants,
+            )
+
+        if not effective_config.is_enable:
+            if trace is not None:
+                trace.skipped(reason="notifications_disabled", config_source=config_source)
+            return []
+
+        if effective_config.is_block:
+            if trace is not None:
+                trace.skipped(reason="tenant_blocked", config_source=config_source)
+            return []
+
+        if not channel_enabled_for_job(effective_config, job):
+            notification_type = (job.notification_type or "").lower()
+            reason = (
+                "sms_disabled"
+                if notification_type == NotificationType.SMS.value
+                else "email_disabled"
+            )
+            if trace is not None:
+                trace.skipped(reason=reason, config_source=config_source)
+            return []
+
+        if not conversation_paths_enabled(effective_config, job):
+            if trace is not None:
+                trace.skipped(
+                    reason="all_conversation_paths_disabled",
+                    config_source=config_source,
+                )
+            return []
+
+        if trace is not None:
+            trace.resolve_recipients()
+
+        conversation_match = load_conversation_match_context(session, job)
+        candidate_reasons = build_candidate_reasons_from_match(conversation_match)
+        candidate_user_ids: Set[UUID] = set(candidate_reasons.keys())
+
         if not candidate_user_ids:
             lead_ids = resolve_lead_ids_for_notification(session, job)
-            logger.info(
-                "No conversation candidates notification={} tenant={} type={} thread_id={} lead_ids={} direction={}",
-                job.notification_id,
-                job.tenant_id,
-                job.notification_type,
-                job.thread_id,
-                [str(lead_id) for lead_id in sorted(lead_ids, key=str)],
-                job.direction,
-            )
+            if trace is not None:
+                trace.no_targets(
+                    lead_ids=[str(lead_id) for lead_id in sorted(lead_ids, key=str)],
+                )
             return []
 
-        logger.info(
-            "Conversation matches notification={} tenant={} type={} thread_id={} "
-            "flagged_users={} manual_reply_user={}",
-            job.notification_id,
-            job.tenant_id,
-            job.notification_type,
-            job.thread_id,
-            [str(user_id) for user_id in sorted(flagged_users, key=str)],
-            str(manual_reply_user) if manual_reply_user else None,
-        )
+        if trace is not None:
+            trace.match(
+                candidates=len(candidate_user_ids),
+                flagged=len(conversation_match.flagged_user_ids),
+                manual_reply=1 if conversation_match.manual_user_id else 0,
+                thread_id=job.thread_id,
+            )
+
+        if trace is not None:
+            trace.evaluate_eligibility()
+
+        qualifying_users: Dict[UUID, List[str]] = {}
+        for user_id in sorted(candidate_user_ids, key=str):
+            passed, reason, include_reasons = evaluate_conversation_eligibility_cached(
+                session,
+                job,
+                user_id,
+                effective_config,
+                conversation_match,
+            )
+            if passed:
+                qualifying_users[user_id] = include_reasons
+                continue
+
+            if trace is not None:
+                trace.ineligible_user(
+                    user_id=user_id,
+                    devices=0,
+                    reason=reason or "conversation_not_eligible",
+                )
+
+        if not qualifying_users:
+            if trace is not None:
+                trace.no_eligible_devices(candidates=len(candidate_user_ids))
+            return []
 
         query = (
             session.query(
@@ -65,7 +140,7 @@ class RecipientResolver:
             .join(UserInDB, UserInDB.id == DeviceTokenInDB.user_id)
             .filter(
                 DeviceTokenInDB.is_active.is_(True),
-                UserInDB.id.in_(candidate_user_ids),
+                UserInDB.id.in_(qualifying_users.keys()),
                 or_(
                     UserInDB.is_notify_mobile.is_(True),
                     UserInDB.is_notify_mobile.is_(None),
@@ -96,48 +171,31 @@ class RecipientResolver:
             devices_by_user.setdefault(user_id, []).append(device)
             user_roles[user_id] = role or ""
 
-        if not devices_by_user:
-            logger.info(
-                "No device tokens notification={} tenant={} candidates={} direction={} "
-                "excluded_actor={} query_rows={} blank_token_rows={}",
-                job.notification_id,
-                job.tenant_id,
-                [str(user_id) for user_id in sorted(candidate_user_ids, key=str)],
-                job.direction,
-                str(exclude_user_id) if exclude_user_id else None,
-                len(rows),
-                blank_token_rows,
-            )
-            return []
-
-        config_rows = (
-            session.query(NotificationConfigInDB)
-            .filter(NotificationConfigInDB.user_id.in_(list(devices_by_user.keys())))
-            .all()
-        )
-        config_by_user = {row.user_id: row for row in config_rows}
-
-        # Hierarchy — disabled: notification_tenants_config per-tenant overrides
-        # tenant_config_by_user: dict[UUID, NotificationTenantConfigInDB] = {}
-        # users_with_per_tenant = [...]
-        # if users_with_per_tenant:
-        #     tenant_rows = session.query(NotificationTenantConfigInDB)...
-
         targets: List[DeliveryTarget] = []
-        for user_id, devices in devices_by_user.items():
+        for user_id, include_reasons in qualifying_users.items():
+            devices = devices_by_user.get(user_id, [])
             role = user_roles.get(user_id, "")
-            global_config = config_from_row(config_by_user.get(user_id))
             ctx = EligibilityContext(
                 job=job,
                 user_id=user_id,
                 user_role=role,
-                config=global_config,
+                config=effective_config,
                 devices=devices,
+                eligible_devices=[],
                 tenant_config_row=None,
                 session=session,
+                trace=trace,
+                conversation_match=conversation_match,
+                job_gated=True,
+                include_reasons=list(include_reasons),
             )
             result = evaluate_user(ctx)
             if result.outcome == StepOutcome.SKIP_USER:
+                continue
+
+            if not ctx.eligible_devices:
+                if trace is not None:
+                    trace.no_devices_user(user_id=user_id)
                 continue
 
             for device in ctx.eligible_devices:
@@ -153,12 +211,16 @@ class RecipientResolver:
                     )
                 )
 
-        logger.info(
-            "Resolved targets notification={} tenant={} type={} conversation_candidates={} eligible_devices={}",
-            job.notification_id,
-            job.tenant_id,
-            job.notification_type,
-            len(candidate_user_ids),
-            len(targets),
-        )
+        if not targets:
+            if trace is not None:
+                trace.no_eligible_devices(
+                    candidates=len(candidate_user_ids),
+                    query_rows=len(rows),
+                    blank_tokens=blank_token_rows,
+                )
+            return []
+
+        if trace is not None:
+            trace.resolve_devices(resolved=len(targets))
+
         return targets

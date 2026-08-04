@@ -157,6 +157,9 @@ def _device_matches_platform(device_platform: str | None, config_platform: str) 
 
 
 def step_platform_filter(ctx: EligibilityContext) -> StepResult:
+    if not ctx.devices:
+        return StepResult(outcome=StepOutcome.CONTINUE)
+
     config_platform = (ctx.config.platform_os or PlatformOs.BOTH.value).lower()
     ctx.eligible_devices = [
         device

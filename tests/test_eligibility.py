@@ -50,3 +50,25 @@ def test_platform_filter_keeps_matching_devices():
     result = step_platform_filter(ctx)
     assert result.outcome == StepOutcome.CONTINUE
     assert ctx.eligible_devices == [device]
+
+
+def test_platform_filter_continues_when_no_devices():
+    ctx = _ctx(devices=[])
+    result = step_platform_filter(ctx)
+    assert result.outcome == StepOutcome.CONTINUE
+    assert ctx.eligible_devices == []
+
+
+def test_evaluate_user_job_gated_runs_platform_filter_only():
+    from app.eligibility.pipeline import evaluate_user
+
+    device = type("Device", (), {"id": uuid4(), "token": "tok", "platform": "ios"})()
+    ctx = _ctx(
+        config=EffectiveConfig(platform_os=PlatformOs.IOS.value),
+        devices=[device],
+        job_gated=True,
+        include_reasons=["flagged"],
+    )
+    result = evaluate_user(ctx)
+    assert result.outcome == StepOutcome.CONTINUE
+    assert ctx.eligible_devices == [device]

@@ -7,6 +7,7 @@ from app.constants.notification_constants import MessageDirection, NotificationT
 from app.domain.models import DeliveryJob, JobKind
 from app.eligibility.context import EffectiveConfig, EligibilityContext, StepOutcome
 from app.eligibility.conversation_eligibility import (
+    conversation_paths_enabled,
     evaluate_conversation_eligibility,
     get_conversation_candidate_reasons,
     get_conversation_candidate_user_ids,
@@ -225,6 +226,60 @@ def test_evaluate_conversation_eligibility_skips_flagged_when_disabled_in_config
     assert not passed
     assert reason == "flagged_disabled_in_config"
     assert include_reasons == []
+
+
+def test_evaluate_conversation_eligibility_prefers_manual_reply_reason_when_both_match(
+    monkeypatch,
+):
+    user_id = uuid4()
+    job = _job()
+    session = MagicMock()
+    config = EffectiveConfig(is_in_flagged=False, is_manual_sms=False)
+
+    monkeypatch.setattr(
+        "app.eligibility.conversation_eligibility.get_flagged_user_ids_for_notification",
+        lambda session, job: {user_id},
+    )
+    monkeypatch.setattr(
+        "app.eligibility.conversation_eligibility.get_manual_reply_user_id",
+        lambda session, job: user_id,
+    )
+    monkeypatch.setattr(
+        "app.eligibility.conversation_eligibility.resolve_lead_ids_for_notification",
+        lambda session, job: {uuid4()},
+    )
+
+    passed, reason, include_reasons = evaluate_conversation_eligibility(
+        session, job, user_id, config
+    )
+    assert not passed
+    assert reason == "manual_reply_disabled_in_config"
+    assert include_reasons == []
+
+
+def test_evaluate_conversation_eligibility_eligible_via_flagged_when_manual_disabled(
+    monkeypatch,
+):
+    user_id = uuid4()
+    job = _job()
+    session = MagicMock()
+    config = EffectiveConfig(is_in_flagged=True, is_manual_sms=False)
+
+    monkeypatch.setattr(
+        "app.eligibility.conversation_eligibility.get_flagged_user_ids_for_notification",
+        lambda session, job: {user_id},
+    )
+    monkeypatch.setattr(
+        "app.eligibility.conversation_eligibility.get_manual_reply_user_id",
+        lambda session, job: user_id,
+    )
+
+    passed, reason, include_reasons = evaluate_conversation_eligibility(
+        session, job, user_id, config
+    )
+    assert passed
+    assert reason is None
+    assert include_reasons == ["flagged"]
 
 
 def test_evaluate_conversation_eligibility_reports_lead_not_found(monkeypatch):
@@ -447,3 +502,49 @@ def test_step_conversation_eligibility_skip(monkeypatch):
     result = step_conversation_eligibility(ctx)
     assert result.outcome == StepOutcome.SKIP_USER
     assert result.reason.startswith("lead_not_found:")
+
+
+def test_evaluate_conversation_eligibility_cached_matches_uncached(monkeypatch):
+    from app.eligibility.conversation_eligibility import (
+        ConversationMatchContext,
+        evaluate_conversation_eligibility,
+        evaluate_conversation_eligibility_cached,
+    )
+
+    user_id = uuid4()
+    job = _job()
+    session = MagicMock()
+    config = EffectiveConfig(is_in_flagged=True, is_manual_sms=False)
+    match = ConversationMatchContext(
+        flagged_user_ids={user_id},
+        manual_user_id=None,
+    )
+
+    monkeypatch.setattr(
+        "app.eligibility.conversation_eligibility.resolve_lead_ids_for_notification",
+        lambda session, job: {uuid4()},
+    )
+
+    uncached = evaluate_conversation_eligibility(session, job, user_id, config)
+    monkeypatch.setattr(
+        "app.eligibility.conversation_eligibility.load_conversation_match_context",
+        lambda session, job: match,
+    )
+    uncached_with_patch = evaluate_conversation_eligibility(session, job, user_id, config)
+    cached = evaluate_conversation_eligibility_cached(session, job, user_id, config, match)
+    assert uncached_with_patch == cached
+    assert cached[0] is True
+    assert cached[2] == ["flagged"]
+
+
+def test_conversation_paths_enabled_sms_requires_at_least_one_path():
+    job = _job(notification_type=NotificationType.SMS.value)
+    assert conversation_paths_enabled(
+        EffectiveConfig(is_in_flagged=False, is_manual_sms=False), job
+    ) is False
+    assert conversation_paths_enabled(
+        EffectiveConfig(is_in_flagged=True, is_manual_sms=False), job
+    ) is True
+    assert conversation_paths_enabled(
+        EffectiveConfig(is_in_flagged=False, is_manual_sms=True), job
+    ) is True

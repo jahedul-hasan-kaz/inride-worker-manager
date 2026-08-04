@@ -73,6 +73,7 @@ class NotificationConfigInDB(Base):
     is_sms_enable = Column(Boolean, nullable=False, server_default=text("true"))
     is_email_enable = Column(Boolean, nullable=False, server_default=text("true"))
     platform_os = Column(String, nullable=False, server_default=text("'both'"))
+    created_at = Column(DateTime, server_default=text("NOW()"))
 
 
 class NotificationTenantConfigInDB(Base):
@@ -90,6 +91,7 @@ class NotificationTenantConfigInDB(Base):
     platform_os = Column(String, nullable=False, server_default=text("'both'"))
     priority = Column(String, nullable=False, server_default=text("'high'"))
     is_block = Column(Boolean, nullable=False, server_default=text("false"))
+    created_at = Column(DateTime, server_default=text("NOW()"))
 
 
 class SMSLogInDB(Base):

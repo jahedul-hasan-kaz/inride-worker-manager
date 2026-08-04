@@ -46,7 +46,10 @@ class EligibilityContext:
     tenant_config_row: Optional[NotificationTenantConfigInDB] = None
     skip_reason: Optional[str] = None
     include_reasons: List[str] = field(default_factory=list)
+    trace: Any = None
     session: Any = None
+    conversation_match: Any = None
+    job_gated: bool = False
 
     @property
     def notification_type(self) -> str:
