@@ -9,8 +9,9 @@ from sqlalchemy.orm import Session
 from app.constants.notification_constants import MessageDirection, NotificationType
 from app.db.models import DeviceTokenInDB, UserInDB
 from app.domain.models import DeliveryJob, DeliveryTarget
-from app.eligibility.context import EligibilityContext, StepOutcome
+from app.eligibility.context import EffectiveConfig, EligibilityContext, StepOutcome
 from app.eligibility.conversation_eligibility import (
+    ConversationMatchContext,
     build_candidate_reasons_from_match,
     channel_enabled_for_job,
     conversation_paths_enabled,
@@ -20,9 +21,10 @@ from app.eligibility.conversation_eligibility import (
 )
 from app.eligibility.notification_config_resolver import resolve_effective_config_for_job
 from app.eligibility.pipeline import evaluate_user
+from app.pipeline.device_token_lookup import list_active_by_tenant
 from app.pipeline.push_trace import PushTrace
 
-# PLATFORM_ADMIN = "platform_admin"
+TENANT_HIERARCHY_REASON = "tenant_hierarchy"
 
 
 class RecipientResolver:
@@ -75,14 +77,97 @@ class RecipientResolver:
                 trace.skipped(reason=reason, config_source=config_source)
             return []
 
+        # Channel on + manual/flagged off → broadcast via tenant hierarchy
+        # (same rule as agent DeviceTokenCRUD.list_active_by_tenant), inbound or outbound.
         if not conversation_paths_enabled(effective_config, job):
+            return RecipientResolver._resolve_tenant_hierarchy(
+                session,
+                job,
+                effective_config,
+                trace=trace,
+            )
+
+        return RecipientResolver._resolve_conversation_paths(
+            session,
+            job,
+            effective_config,
+            trace=trace,
+        )
+
+    @staticmethod
+    def _exclude_actor_user_id(job: DeliveryJob) -> Optional[UUID]:
+        if (job.direction or "").lower() == MessageDirection.OUTBOUND.value:
+            return job.actor_user_id
+        return None
+
+    @staticmethod
+    def _resolve_tenant_hierarchy(
+        session: Session,
+        job: DeliveryJob,
+        effective_config: EffectiveConfig,
+        *,
+        trace: Optional[PushTrace],
+    ) -> List[DeliveryTarget]:
+        if trace is not None:
+            trace.resolve_recipients()
+
+        assert job.tenant_id is not None
+        rows = list_active_by_tenant(
+            session,
+            job.tenant_id,
+            exclude_user_id=RecipientResolver._exclude_actor_user_id(job),
+        )
+
+        devices_by_user: dict[UUID, list[DeviceTokenInDB]] = {}
+        user_roles: dict[UUID, str] = {}
+        blank_token_rows = 0
+        for device, user_id, role in rows:
+            token = (device.token or "").strip()
+            if not token:
+                blank_token_rows += 1
+                continue
+            devices_by_user.setdefault(user_id, []).append(device)
+            user_roles[user_id] = role or ""
+
+        if trace is not None:
+            trace.match(
+                candidates=len(devices_by_user),
+                flagged=0,
+                manual_reply=0,
+                thread_id=job.thread_id,
+            )
+            trace.evaluate_eligibility()
+
+        if not devices_by_user:
             if trace is not None:
-                trace.skipped(
-                    reason="all_conversation_paths_disabled",
-                    config_source=config_source,
-                )
+                trace.skipped(reason="no_tenant_hierarchy_devices")
             return []
 
+        qualifying_users = {
+            user_id: [TENANT_HIERARCHY_REASON] for user_id in devices_by_user
+        }
+        return RecipientResolver._targets_from_qualifying_users(
+            session,
+            job,
+            effective_config,
+            qualifying_users=qualifying_users,
+            devices_by_user=devices_by_user,
+            user_roles=user_roles,
+            conversation_match=None,
+            candidate_count=len(devices_by_user),
+            query_rows=len(rows),
+            blank_token_rows=blank_token_rows,
+            trace=trace,
+        )
+
+    @staticmethod
+    def _resolve_conversation_paths(
+        session: Session,
+        job: DeliveryJob,
+        effective_config: EffectiveConfig,
+        *,
+        trace: Optional[PushTrace],
+    ) -> List[DeliveryTarget]:
         if trace is not None:
             trace.resolve_recipients()
 
@@ -105,8 +190,6 @@ class RecipientResolver:
                 manual_reply=1 if conversation_match.manual_user_id else 0,
                 thread_id=job.thread_id,
             )
-
-        if trace is not None:
             trace.evaluate_eligibility()
 
         qualifying_users: Dict[UUID, List[str]] = {}
@@ -155,9 +238,7 @@ class RecipientResolver:
             )
         )
 
-        exclude_user_id = None
-        if (job.direction or "").lower() == MessageDirection.OUTBOUND.value:
-            exclude_user_id = job.actor_user_id
+        exclude_user_id = RecipientResolver._exclude_actor_user_id(job)
         if exclude_user_id is not None:
             query = query.filter(DeviceTokenInDB.user_id != exclude_user_id)
 
@@ -174,6 +255,35 @@ class RecipientResolver:
             devices_by_user.setdefault(user_id, []).append(device)
             user_roles[user_id] = role or ""
 
+        return RecipientResolver._targets_from_qualifying_users(
+            session,
+            job,
+            effective_config,
+            qualifying_users=qualifying_users,
+            devices_by_user=devices_by_user,
+            user_roles=user_roles,
+            conversation_match=conversation_match,
+            candidate_count=len(candidate_user_ids),
+            query_rows=len(rows),
+            blank_token_rows=blank_token_rows,
+            trace=trace,
+        )
+
+    @staticmethod
+    def _targets_from_qualifying_users(
+        session: Session,
+        job: DeliveryJob,
+        effective_config: EffectiveConfig,
+        *,
+        qualifying_users: Dict[UUID, List[str]],
+        devices_by_user: dict[UUID, list[DeviceTokenInDB]],
+        user_roles: dict[UUID, str],
+        conversation_match: Optional[ConversationMatchContext],
+        candidate_count: int,
+        query_rows: int,
+        blank_token_rows: int,
+        trace: Optional[PushTrace],
+    ) -> List[DeliveryTarget]:
         targets: List[DeliveryTarget] = []
         for user_id, include_reasons in qualifying_users.items():
             devices = devices_by_user.get(user_id, [])
@@ -217,8 +327,8 @@ class RecipientResolver:
         if not targets:
             if trace is not None:
                 trace.no_eligible_devices(
-                    candidates=len(candidate_user_ids),
-                    query_rows=len(rows),
+                    candidates=candidate_count,
+                    query_rows=query_rows,
                     blank_tokens=blank_token_rows,
                 )
             return []

@@ -171,6 +171,66 @@ def test_resolve_logs_ineligible_for_no_device_manual_reply_user():
     trace.no_devices_user.assert_not_called()
 
 
+def test_resolve_uses_tenant_hierarchy_when_conversation_paths_disabled():
+    user_id = uuid4()
+    job = _job(direction=MessageDirection.OUTBOUND.value, actor_user_id=uuid4())
+
+    device = MagicMock()
+    device.token = "ExponentPushToken[tenant]"
+    device.id = uuid4()
+    device.platform = "android"
+
+    session = MagicMock()
+    trace = MagicMock()
+
+    with patch(
+        "app.pipeline.recipient_resolver.resolve_effective_config_for_job",
+        return_value=(
+            _enabled_config(is_in_flagged=False, is_manual_sms=False),
+            "global",
+        ),
+    ), patch(
+        "app.pipeline.recipient_resolver.load_conversation_match_context",
+    ) as load_match, patch(
+        "app.pipeline.recipient_resolver.list_active_by_tenant",
+        return_value=[(device, user_id, "agent")],
+    ) as tenant_lookup, patch(
+        "app.pipeline.recipient_resolver.evaluate_user",
+        side_effect=lambda ctx: (
+            setattr(ctx, "eligible_devices", list(ctx.devices)),
+            StepResult(outcome=StepOutcome.CONTINUE),
+        )[1],
+    ):
+        targets = RecipientResolver.resolve(session, job, trace=trace)
+
+    assert len(targets) == 1
+    assert targets[0].push_token == "ExponentPushToken[tenant]"
+    assert targets[0].user_id == user_id
+    load_match.assert_not_called()
+    tenant_lookup.assert_called_once()
+    assert tenant_lookup.call_args.kwargs["exclude_user_id"] == job.actor_user_id
+    trace.skipped.assert_not_called()
+
+
+def test_resolve_tenant_hierarchy_keeps_actor_on_inbound():
+    job = _job(direction=MessageDirection.INBOUND.value, actor_user_id=uuid4())
+    session = MagicMock()
+
+    with patch(
+        "app.pipeline.recipient_resolver.resolve_effective_config_for_job",
+        return_value=(
+            _enabled_config(is_in_flagged=False, is_manual_sms=False),
+            "global",
+        ),
+    ), patch(
+        "app.pipeline.recipient_resolver.list_active_by_tenant",
+        return_value=[],
+    ) as tenant_lookup:
+        RecipientResolver.resolve(session, job)
+
+    assert tenant_lookup.call_args.kwargs["exclude_user_id"] is None
+
+
 def test_resolve_skips_conversation_match_when_notifications_disabled():
     job = _job()
     session = MagicMock()
@@ -188,28 +248,6 @@ def test_resolve_skips_conversation_match_when_notifications_disabled():
     load_match.assert_not_called()
     trace.skipped.assert_called_once()
     assert trace.skipped.call_args.kwargs["reason"] == "notifications_disabled"
-
-
-def test_resolve_skips_conversation_match_when_all_paths_disabled():
-    job = _job()
-    session = MagicMock()
-    trace = MagicMock()
-
-    with patch(
-        "app.pipeline.recipient_resolver.resolve_effective_config_for_job",
-        return_value=(
-            _enabled_config(is_in_flagged=False, is_manual_sms=False),
-            "global",
-        ),
-    ), patch(
-        "app.pipeline.recipient_resolver.load_conversation_match_context",
-    ) as load_match:
-        targets = RecipientResolver.resolve(session, job, trace=trace)
-
-    assert targets == []
-    load_match.assert_not_called()
-    trace.skipped.assert_called_once()
-    assert trace.skipped.call_args.kwargs["reason"] == "all_conversation_paths_disabled"
 
 
 def test_resolve_config_before_recipients_trace_order():
