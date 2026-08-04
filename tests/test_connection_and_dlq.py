@@ -4,7 +4,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
-from app.domain.models import DeliveryJob, JobKind
+from app.domain.models import DeliveryJob, DeliveryTarget, JobKind
+from app.eligibility.context import EffectiveConfig
 from app.pipeline.runner import DeliveryRunner
 
 
@@ -15,11 +16,10 @@ def test_execute_job_closes_session_before_pubsub_publish():
         notification_id=uuid4(),
         tenant_id=uuid4(),
     )
-    target = SimpleNamespace(
+    target = DeliveryTarget(
         device_token_id=uuid4(),
         push_token="ExponentPushToken[x]",
         user_id=uuid4(),
-        notification_priority=0,
     )
 
     open_scopes = {"count": 0}
@@ -66,6 +66,9 @@ def test_execute_job_closes_session_before_pubsub_publish():
         return_value=False,
     ), patch(
         "app.pipeline.runner.NotificationFinalizer.finalize"
+    ), patch(
+        "app.pipeline.runner.load_global_effective_config",
+        return_value=EffectiveConfig(),
     ), patch(
         "app.pipeline.runner.NotificationFinalizer.deactivate_tokens"
     ):

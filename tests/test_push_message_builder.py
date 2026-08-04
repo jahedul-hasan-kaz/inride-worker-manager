@@ -32,8 +32,10 @@ def test_build_push_item_includes_worker_payload():
         device_token_id=uuid4(),
         push_token="ExponentPushToken[abc]",
     )
-    item = build_push_item(job, target)
+    item = build_push_item(job, target, ttl_sec=120)
     assert item["push_token"] == "ExponentPushToken[abc]"
+    assert item["notification_id"] == str(job.notification_id)
+    assert item["ttl"] == 120
     assert item["title"] == "New SMS from +15551234567"
     assert item["body"] == "Hello"
     assert item["data"]["notificationId"] == str(job.notification_id)

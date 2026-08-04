@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 from app.domain.handle_result import HandleDisposition
-from app.domain.models import DeliveryJob, JobKind, PushStatus
+from app.domain.models import DeliveryJob, DeliveryTarget, JobKind, PushStatus
 from app.domain.policies import ImmediateSingleNotificationPolicy
+from app.eligibility.context import EffectiveConfig
 from app.monitoring.metrics import PushMetrics
 from app.pipeline.push_types import BatchPushResponse, PushSendResult
 from app.pipeline.runner import DeliveryRunner
@@ -15,6 +17,17 @@ from app.pipeline.runner import DeliveryRunner
 def test_immediate_policy_always_delivers():
     policy = ImmediateSingleNotificationPolicy()
     job = DeliveryJob(job_kind=JobKind.IMMEDIATE_SINGLE, notification_id=uuid4())
+    assert policy.should_deliver(job) is True
+    assert policy.skip_status(job) is None
+
+
+def test_immediate_policy_ignores_expires_at():
+    policy = ImmediateSingleNotificationPolicy()
+    job = DeliveryJob(
+        job_kind=JobKind.IMMEDIATE_SINGLE,
+        notification_id=uuid4(),
+        expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+    )
     assert policy.should_deliver(job) is True
     assert policy.skip_status(job) is None
 
@@ -104,13 +117,13 @@ def test_execute_job_partial_success_marks_sent():
         notification_id=uuid4(),
         tenant_id=uuid4(),
     )
-    target_ok = SimpleNamespace(
+    target_ok = DeliveryTarget(
         device_token_id=uuid4(),
         push_token="ExponentPushToken[ok]",
         user_id=uuid4(),
         notification_priority=1,
     )
-    target_bad = SimpleNamespace(
+    target_bad = DeliveryTarget(
         device_token_id=uuid4(),
         push_token="ExponentPushToken[bad]",
         user_id=uuid4(),
@@ -129,6 +142,9 @@ def test_execute_job_partial_success_marks_sent():
     runner = DeliveryRunner(sender=sender)
 
     with patch("app.pipeline.runner.session_scope") as scope, patch(
+        "app.pipeline.runner.load_global_effective_config",
+        return_value=EffectiveConfig(),
+    ), patch(
         "app.pipeline.runner.RecipientResolver.resolve",
         return_value=[target_ok, target_bad],
     ), patch("app.pipeline.runner.DeviceIdempotency.try_claim", return_value=True), patch(
@@ -162,7 +178,7 @@ def test_execute_job_all_failed_marks_failed():
         notification_id=uuid4(),
         tenant_id=uuid4(),
     )
-    target = SimpleNamespace(
+    target = DeliveryTarget(
         device_token_id=uuid4(),
         push_token="ExponentPushToken[x]",
         user_id=uuid4(),
@@ -183,6 +199,9 @@ def test_execute_job_all_failed_marks_failed():
     runner = DeliveryRunner(sender=sender)
 
     with patch("app.pipeline.runner.session_scope") as scope, patch(
+        "app.pipeline.runner.load_global_effective_config",
+        return_value=EffectiveConfig(),
+    ), patch(
         "app.pipeline.runner.RecipientResolver.resolve",
         return_value=[target],
     ), patch("app.pipeline.runner.DeviceIdempotency.try_claim", return_value=True), patch(

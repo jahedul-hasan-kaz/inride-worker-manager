@@ -49,6 +49,9 @@ class RecipientResolver:
                 source=config_source,
                 is_enable=effective_config.is_enable,
                 is_all_tenants=effective_config.is_all_tenants,
+                ttl_sec=effective_config.ttl_sec,
+                aggregation_type=effective_config.aggregation_type,
+                aggregation_sec=effective_config.aggregation_sec,
             )
 
         if not effective_config.is_enable:

@@ -6,6 +6,7 @@ from uuid import uuid4
 from app.pipeline.notification_pubsub_client import (
     NotificationPubSubClient,
     build_pubsub_push_message,
+    serialize_pubsub_push_message,
 )
 
 
@@ -15,11 +16,15 @@ def test_build_pubsub_push_message_matches_agent_format():
         title="New SMS from thread-1",
         body="hello",
         data={"notificationId": "notif-1", "threadId": "thread-1"},
+        notification_id="notif-1",
+        ttl=60,
     )
 
     assert message == {
         "to": "ExponentPushToken[abc]",
         "medium": "push_notification",
+        "notification_id": "notif-1",
+        "ttl": 60,
         "args": {
             "title": "New SMS from thread-1",
             "body": "hello",
@@ -27,6 +32,22 @@ def test_build_pubsub_push_message_matches_agent_format():
             "sound": "default",
         },
     }
+
+
+def test_serialize_pubsub_push_message_matches_publish_body():
+    message = build_pubsub_push_message(
+        push_token="ExponentPushToken[abc]",
+        title="title",
+        body="body",
+        data={"notificationId": "notif-1"},
+        notification_id="notif-1",
+        ttl=60,
+    )
+    assert serialize_pubsub_push_message(message) == json.dumps(
+        message,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
 
 
 def test_send_push_batch_publishes_each_item(monkeypatch):
@@ -46,6 +67,8 @@ def test_send_push_batch_publishes_each_item(monkeypatch):
             {
                 "device_token_id": str(device_token_id),
                 "push_token": "ExponentPushToken[token-1]",
+                "notification_id": "notif-1",
+                "ttl": 60,
                 "title": "New Email from sender@example.com",
                 "body": "hello",
                 "data": {"threadId": "thread-root-1"},
@@ -57,6 +80,8 @@ def test_send_push_batch_publishes_each_item(monkeypatch):
     assert response.failed_count == 0
     assert len(published) == 1
     assert published[0]["medium"] == "push_notification"
+    assert published[0]["notification_id"] == "notif-1"
+    assert published[0]["ttl"] == 60
     assert published[0]["to"] == "ExponentPushToken[token-1]"
 
 
@@ -67,6 +92,8 @@ def test_send_push_batch_fails_when_publisher_missing():
             {
                 "device_token_id": str(uuid4()),
                 "push_token": "ExponentPushToken[token-1]",
+                "notification_id": "notif-1",
+                "ttl": 60,
                 "title": "title",
                 "body": "body",
                 "data": {},

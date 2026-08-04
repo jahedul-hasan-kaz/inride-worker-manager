@@ -16,11 +16,15 @@ def build_pubsub_push_message(
     title: str,
     body: str | None,
     data: Dict[str, Any],
+    notification_id: str,
+    ttl: int | None,
 ) -> dict:
     """Match ai-agent-management notification_push_service._publish_push_message payload."""
     return {
         "to": push_token,
         "medium": "push_notification",
+        "notification_id": notification_id,
+        "ttl": ttl,
         "args": {
             "title": title,
             "body": body,
@@ -28,6 +32,11 @@ def build_pubsub_push_message(
             "sound": "default",
         },
     }
+
+
+def serialize_pubsub_push_message(message: dict) -> str:
+    """JSON body passed to Pub/Sub publish_message."""
+    return json.dumps(message, separators=(",", ":"), ensure_ascii=False)
 
 
 class NotificationPubSubClient:
@@ -65,15 +74,50 @@ class NotificationPubSubClient:
                 )
                 continue
 
+            notification_id = str(item.get("notification_id") or "").strip()
+            if not notification_id:
+                failed_count += 1
+                results.append(
+                    PushSendResult(
+                        device_token_id=device_token_id,
+                        status="failed",
+                        error="missing_notification_id",
+                    )
+                )
+                continue
+
+            ttl = item.get("ttl")
+            if ttl is not None:
+                try:
+                    ttl = int(ttl)
+                except (TypeError, ValueError):
+                    failed_count += 1
+                    results.append(
+                        PushSendResult(
+                            device_token_id=device_token_id,
+                            status="failed",
+                            error="invalid_ttl",
+                        )
+                    )
+                    continue
+
             message = build_pubsub_push_message(
                 push_token=push_token,
                 title=item.get("title") or "",
                 body=item.get("body"),
                 data=item.get("data") or {},
+                notification_id=notification_id,
+                ttl=ttl,
             )
+            payload = serialize_pubsub_push_message(message)
+
+            # logger.info(
+            #     "Publishing push_notification payload={}",
+            #     payload,
+            # )
 
             try:
-                publisher.publish_message(json.dumps(message))
+                publisher.publish_message(payload)
                 sent_count += 1
                 results.append(
                     PushSendResult(

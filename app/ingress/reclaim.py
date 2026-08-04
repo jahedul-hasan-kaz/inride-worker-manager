@@ -26,7 +26,7 @@ def reclaim_stale(session: Session) -> int:
                 SET push_status = 'pending',
                     updated_at = NOW(),
                     push_error = NULL
-                WHERE push_status = 'processing'
+                WHERE push_status IN ('processing', 'aggregated_processing')
                   AND updated_at < NOW() - make_interval(secs => :seconds)
                 RETURNING id
             ),

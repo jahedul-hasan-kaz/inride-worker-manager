@@ -20,6 +20,9 @@ def _global_row(**kwargs):
         "is_sms_enable": True,
         "is_email_enable": True,
         "platform_os": "both",
+        "ttl_sec": 60,
+        "aggregation_type": "none",
+        "aggregation_sec": None,
         "created_at": datetime(2026, 8, 1),
     }
     defaults.update(kwargs)

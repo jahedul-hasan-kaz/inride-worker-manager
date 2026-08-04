@@ -5,7 +5,13 @@ from enum import Enum
 from typing import Any, List, Optional
 from uuid import UUID
 
-from app.constants.notification_constants import DEFAULT_TENANT_CONFIG, PlatformOs, priority_to_weight
+from app.constants.notification_constants import (
+    DEFAULT_GLOBAL_DELIVERY_CONFIG,
+    DEFAULT_TENANT_CONFIG,
+    AggregationType,
+    PlatformOs,
+    priority_to_weight,
+)
 from app.db.models import DeviceTokenInDB, NotificationConfigInDB, NotificationTenantConfigInDB
 from app.domain.models import DeliveryJob
 
@@ -33,6 +39,9 @@ class EffectiveConfig:
     platform_os: str = PlatformOs.BOTH.value
     priority: str = DEFAULT_TENANT_CONFIG["priority"]
     is_block: bool = False
+    ttl_sec: int = DEFAULT_GLOBAL_DELIVERY_CONFIG["ttl_sec"]
+    aggregation_type: str = DEFAULT_GLOBAL_DELIVERY_CONFIG["aggregation_type"]
+    aggregation_sec: Optional[int] = DEFAULT_GLOBAL_DELIVERY_CONFIG["aggregation_sec"]
 
 
 @dataclass
@@ -82,6 +91,9 @@ def config_from_row(row: Optional[NotificationConfigInDB]) -> EffectiveConfig:
         is_sms_enable=bool(row.is_sms_enable),
         is_email_enable=bool(row.is_email_enable),
         platform_os=(row.platform_os or PlatformOs.BOTH.value).lower(),
+        ttl_sec=int(row.ttl_sec) if row.ttl_sec is not None else DEFAULT_GLOBAL_DELIVERY_CONFIG["ttl_sec"],
+        aggregation_type=(row.aggregation_type or AggregationType.NONE.value).lower(),
+        aggregation_sec=row.aggregation_sec,
     )
 
 

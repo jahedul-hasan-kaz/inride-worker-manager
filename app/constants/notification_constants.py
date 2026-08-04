@@ -25,6 +25,16 @@ class TenantPriority(str, Enum):
     LOW = "low"
 
 
+class AggregationType(str, Enum):
+    NONE = "none"
+    SMS = "sms"
+    EMAIL = "email"
+    BOTH = "both"
+
+
+AGGREGATION_TYPES = {item.value for item in AggregationType}
+
+
 PRIORITY_WEIGHT = {
     TenantPriority.HIGH.value: 3,
     TenantPriority.MEDIUM.value: 2,
@@ -43,6 +53,12 @@ DEFAULT_TENANT_CONFIG = {
     "is_block": False,
 }
 
+DEFAULT_GLOBAL_DELIVERY_CONFIG = {
+    "ttl_sec": 60,
+    "aggregation_type": AggregationType.NONE.value,
+    "aggregation_sec": None,
+}
+
 
 def priority_to_weight(priority: Optional[str]) -> int:
     if not priority:
@@ -53,8 +69,10 @@ def priority_to_weight(priority: Optional[str]) -> int:
 class PushStatus(str, Enum):
     PENDING = "pending"
     PROCESSING = "processing"
+    AGGREGATED_PROCESSING = "aggregated_processing"
     SENT = "sent"
     FAILED = "failed"
+    WINDOW_SKIPPED = "window_skipped"
 
 
 _DIRECTION_ALIASES = {

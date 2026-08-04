@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 from app.domain.models import DeliveryJob, DeliveryTarget
 
@@ -45,12 +46,63 @@ def build_data(job: DeliveryJob) -> Dict[str, Any]:
     }
 
 
-def build_push_item(job: DeliveryJob, target: DeliveryTarget) -> dict:
+def build_push_item(
+    job: DeliveryJob,
+    target: DeliveryTarget,
+    *,
+    ttl_sec: Optional[int] = None,
+) -> dict:
     """Build one Expo payload for the agent batch send API."""
+    return build_digest_push_item(job, target, [job], ttl_sec=ttl_sec)
+
+
+def build_digest_push_item(
+    primary_job: DeliveryJob,
+    target: DeliveryTarget,
+    jobs: List[DeliveryJob],
+    *,
+    ttl_sec: Optional[int] = None,
+) -> dict:
+    count = len(jobs)
+    latest = jobs[-1]
+    title = build_digest_title(latest, count)
+    body = build_digest_body(jobs)
+    data = build_data(latest)
+    if count > 1:
+        data["notificationIds"] = [str(job.notification_id) for job in jobs]
+        data["aggregatedCount"] = count
     return {
         "device_token_id": str(target.device_token_id),
         "push_token": target.push_token,
-        "title": build_title(job),
-        "body": _truncate(job.preview_text),
-        "data": build_data(job),
+        "notification_id": str(latest.notification_id),
+        "ttl": ttl_sec,
+        "title": title,
+        "body": body,
+        "data": data,
     }
+
+
+def _format_since_time(value: datetime) -> str:
+    return value.strftime("%I:%M %p").lstrip("0")
+
+
+def _earliest_created_at(jobs: List[DeliveryJob]) -> Optional[datetime]:
+    timestamps = [job.created_at for job in jobs if job.created_at is not None]
+    if not timestamps:
+        return None
+    return min(timestamps)
+
+
+def build_digest_title(job: DeliveryJob, count: int) -> str:
+    del count  # Aggregated digests keep the same title as a single push.
+    return build_title(job)
+
+
+def build_digest_body(jobs: List[DeliveryJob]) -> Optional[str]:
+    if len(jobs) == 1:
+        return _truncate(jobs[0].preview_text)
+    # since = _earliest_created_at(jobs)
+    # since_label = _format_since_time(since) if since is not None else "recently"
+    count = len(jobs)
+    noun = "notification" if count == 1 else "notifications"
+    return f"{count} new {noun}"

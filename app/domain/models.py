@@ -15,9 +15,10 @@ class JobKind(str, Enum):
 class PushStatus(str, Enum):
     PENDING = "pending"
     PROCESSING = "processing"
+    AGGREGATED_PROCESSING = "aggregated_processing"
     SENT = "sent"
     FAILED = "failed"
-    # Future: EXPIRED = "expired"
+    WINDOW_SKIPPED = "window_skipped"
 
 
 @dataclass(frozen=True)
@@ -45,8 +46,9 @@ class DeliveryJob:
     direction: Optional[str] = None
     email_log_id: Optional[UUID] = None
     sms_log_id: Optional[int] = None
-    expires_at: Optional[datetime] = None  # future TTL
-    aggregate_id: Optional[UUID] = None  # future aggregation
+    created_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None  # computed from ttl_sec at claim time
+    aggregate_id: Optional[UUID] = None  # digest primary notification id
     source_notification_ids: List[UUID] = field(default_factory=list)
     raw_payload: Dict[str, Any] = field(default_factory=dict)
 

@@ -156,12 +156,24 @@ class PushTrace:
             status=status,
         )
 
-    def config_resolved(self, *, source: str, is_enable: bool, is_all_tenants: bool) -> None:
+    def config_resolved(
+        self,
+        *,
+        source: str,
+        is_enable: bool,
+        is_all_tenants: bool,
+        ttl_sec: Optional[int] = None,
+        aggregation_type: Optional[str] = None,
+        aggregation_sec: Optional[int] = None,
+    ) -> None:
         self.event(
             "CONFIG",
             source=source,
             enabled=is_enable,
             is_all_tenants=is_all_tenants,
+            ttl_sec=ttl_sec,
+            aggregation_type=aggregation_type,
+            aggregation_sec=aggregation_sec,
         )
 
     def skipped(self, *, reason: str, **fields: Any) -> None:

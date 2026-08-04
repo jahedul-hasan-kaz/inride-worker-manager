@@ -26,6 +26,13 @@ def load_latest_global_notification_config(
     )
 
 
+def load_global_effective_config(session: Session) -> EffectiveConfig:
+    global_row = load_latest_global_notification_config(session)
+    if global_row is None:
+        return default_effective_config()
+    return config_from_row(global_row)
+
+
 def load_latest_tenant_notification_config(
     session: Session,
     tenant_id: UUID,
@@ -74,6 +81,9 @@ def resolve_effective_config_for_job(
             is_enable=global_config.is_enable,
             is_all_tenants=False,
             is_block=True,
+            ttl_sec=global_config.ttl_sec,
+            aggregation_type=global_config.aggregation_type,
+            aggregation_sec=global_config.aggregation_sec,
         ), "tenant_blocked"
 
     return EffectiveConfig(
@@ -87,4 +97,7 @@ def resolve_effective_config_for_job(
         platform_os=tenant_config.platform_os,
         priority=tenant_config.priority,
         is_block=False,
+        ttl_sec=global_config.ttl_sec,
+        aggregation_type=global_config.aggregation_type,
+        aggregation_sec=global_config.aggregation_sec,
     ), "tenant"
