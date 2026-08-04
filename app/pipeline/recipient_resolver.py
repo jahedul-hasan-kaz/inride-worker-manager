@@ -7,9 +7,15 @@ from loguru import logger
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
+from app.constants.notification_constants import MessageDirection
 from app.db.models import DeviceTokenInDB, NotificationConfigInDB, UserInDB
 from app.domain.models import DeliveryJob, DeliveryTarget
 from app.eligibility.context import EligibilityContext, StepOutcome, config_from_row
+from app.eligibility.conversation_eligibility import (
+    get_conversation_candidate_reasons,
+    get_conversation_match_summary,
+    resolve_lead_ids_for_notification,
+)
 from app.eligibility.pipeline import evaluate_user
 
 # PLATFORM_ADMIN = "platform_admin"
@@ -23,6 +29,33 @@ class RecipientResolver:
         if job.tenant_id is None:
             return []
 
+        flagged_users, manual_reply_user = get_conversation_match_summary(session, job)
+        candidate_reasons = get_conversation_candidate_reasons(session, job)
+        candidate_user_ids = set(candidate_reasons.keys())
+        if not candidate_user_ids:
+            lead_ids = resolve_lead_ids_for_notification(session, job)
+            logger.info(
+                "No conversation candidates notification={} tenant={} type={} thread_id={} lead_ids={} direction={}",
+                job.notification_id,
+                job.tenant_id,
+                job.notification_type,
+                job.thread_id,
+                [str(lead_id) for lead_id in sorted(lead_ids, key=str)],
+                job.direction,
+            )
+            return []
+
+        logger.info(
+            "Conversation matches notification={} tenant={} type={} thread_id={} "
+            "flagged_users={} manual_reply_user={}",
+            job.notification_id,
+            job.tenant_id,
+            job.notification_type,
+            job.thread_id,
+            [str(user_id) for user_id in sorted(flagged_users, key=str)],
+            str(manual_reply_user) if manual_reply_user else None,
+        )
+
         query = (
             session.query(
                 DeviceTokenInDB,
@@ -32,7 +65,7 @@ class RecipientResolver:
             .join(UserInDB, UserInDB.id == DeviceTokenInDB.user_id)
             .filter(
                 DeviceTokenInDB.is_active.is_(True),
-                UserInDB.tenant_id == job.tenant_id,
+                UserInDB.id.in_(candidate_user_ids),
                 or_(
                     UserInDB.is_notify_mobile.is_(True),
                     UserInDB.is_notify_mobile.is_(None),
@@ -44,15 +77,9 @@ class RecipientResolver:
             )
         )
 
-        # Hierarchy — disabled: scope_tenant_id / platform_admin branching
-        # exclude_user_id = job.actor_user_id
-        # actor: Optional[UserInDB] = None
-        # if exclude_user_id is not None:
-        #     actor = session.query(UserInDB).filter(UserInDB.id == exclude_user_id).first()
-        # if actor is None or actor.role != PLATFORM_ADMIN:
-        #     query = query.filter(...)
-
-        exclude_user_id = job.actor_user_id
+        exclude_user_id = None
+        if (job.direction or "").lower() == MessageDirection.OUTBOUND.value:
+            exclude_user_id = job.actor_user_id
         if exclude_user_id is not None:
             query = query.filter(DeviceTokenInDB.user_id != exclude_user_id)
 
@@ -60,18 +87,26 @@ class RecipientResolver:
 
         devices_by_user: dict[UUID, list[DeviceTokenInDB]] = {}
         user_roles: dict[UUID, str] = {}
+        blank_token_rows = 0
         for device, user_id, role in rows:
             token = (device.token or "").strip()
             if not token:
+                blank_token_rows += 1
                 continue
             devices_by_user.setdefault(user_id, []).append(device)
             user_roles[user_id] = role or ""
 
         if not devices_by_user:
             logger.info(
-                "No device tokens for notification={} tenant={}",
+                "No device tokens notification={} tenant={} candidates={} direction={} "
+                "excluded_actor={} query_rows={} blank_token_rows={}",
                 job.notification_id,
                 job.tenant_id,
+                [str(user_id) for user_id in sorted(candidate_user_ids, key=str)],
+                job.direction,
+                str(exclude_user_id) if exclude_user_id else None,
+                len(rows),
+                blank_token_rows,
             )
             return []
 
@@ -119,11 +154,11 @@ class RecipientResolver:
                 )
 
         logger.info(
-            "Resolved targets notification={} tenant={} type={} candidates={} eligible_devices={}",
+            "Resolved targets notification={} tenant={} type={} conversation_candidates={} eligible_devices={}",
             job.notification_id,
             job.tenant_id,
             job.notification_type,
-            len(devices_by_user),
+            len(candidate_user_ids),
             len(targets),
         )
         return targets

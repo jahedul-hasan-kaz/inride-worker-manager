@@ -270,11 +270,13 @@ class DeliveryRunner:
             )
             return
 
+        skipped_targets = 0
         for target in targets:
             with session_scope() as session:
                 claimed = DeviceIdempotency.try_claim(session, job, target)
 
             if not claimed:
+                skipped_targets += 1
                 push_metrics.device_attempted("skipped")
                 early_results.setdefault(
                     job.notification_id,
@@ -291,6 +293,22 @@ class DeliveryRunner:
                     target=target,
                     payload=build_push_item(job, target),
                 )
+            )
+
+        if not prepared and targets:
+            logger.info(
+                "Notification {} resolved {} device target(s) but all skipped by idempotency "
+                "(already sent or in-flight for this notification)",
+                job.notification_id,
+                len(targets),
+            )
+        elif skipped_targets:
+            logger.info(
+                "Notification {} prepared={} skipped_by_idempotency={} total_targets={}",
+                job.notification_id,
+                len(prepared),
+                skipped_targets,
+                len(targets),
             )
 
     def _finalize_early_only(

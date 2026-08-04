@@ -113,7 +113,9 @@ class EmailLogInDB(Base):
     tenant_id = Column(UUID(as_uuid=True), nullable=True)
     lead_id = Column(UUID(as_uuid=True), nullable=True)
     direction = Column(String, nullable=False)
+    in_reply_to_message_id = Column(String, nullable=True)
     sent_by = Column(Text, nullable=True)
+    sender_user_id = Column(UUID(as_uuid=True), nullable=True)
     created_at = Column(DateTime, nullable=True)
 
 

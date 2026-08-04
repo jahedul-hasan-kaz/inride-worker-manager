@@ -22,7 +22,7 @@ opentelemetry-api = "^1.29.0"
 opentelemetry-sdk = "^1.29.0"
 opentelemetry-instrumentation-fastapi = "^0.50b0"
 
-[tool.poetry.dev-dependencies]
+[tool.poetry.group.dev.dependencies]
 pytest = "*"
 
 [tool.pytest.ini_options]

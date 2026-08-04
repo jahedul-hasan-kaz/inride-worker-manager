@@ -39,9 +39,10 @@ def evaluate_user(ctx: EligibilityContext) -> StepResult:
             )
             return result
     logger.info(
-        "Eligibility pass notification={} user={} devices={}",
+        "Eligibility pass notification={} user={} devices={} include_reasons={}",
         ctx.job.notification_id,
         ctx.user_id,
         len(ctx.eligible_devices),
+        ctx.include_reasons,
     )
     return StepResult(outcome=StepOutcome.CONTINUE)

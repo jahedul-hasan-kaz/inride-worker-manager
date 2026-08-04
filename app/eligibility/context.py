@@ -45,6 +45,7 @@ class EligibilityContext:
     eligible_devices: List[DeviceTokenInDB] = field(default_factory=list)
     tenant_config_row: Optional[NotificationTenantConfigInDB] = None
     skip_reason: Optional[str] = None
+    include_reasons: List[str] = field(default_factory=list)
     session: Any = None
 
     @property

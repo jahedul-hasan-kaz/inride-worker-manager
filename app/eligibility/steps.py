@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from app.constants.notification_constants import NotificationType, PlatformOs
 from app.eligibility.context import EligibilityContext, StepOutcome, StepResult
-from app.eligibility.conversation_eligibility import should_notify_user_for_conversation
+from app.eligibility.conversation_eligibility import evaluate_conversation_eligibility
 from sqlalchemy.orm import Session
 
 
@@ -55,10 +55,18 @@ def step_conversation_eligibility(ctx: EligibilityContext) -> StepResult:
     if session is None or ctx.job.tenant_id is None:
         return StepResult(outcome=StepOutcome.SKIP_USER, reason="missing_session_or_tenant")
 
-    if should_notify_user_for_conversation(session, ctx.job, ctx.user_id):
+    passed, reason, include_reasons = evaluate_conversation_eligibility(
+        session, ctx.job, ctx.user_id, ctx.config
+    )
+    if passed:
+        ctx.skip_reason = None
+        ctx.include_reasons = include_reasons
         return StepResult(outcome=StepOutcome.CONTINUE)
 
-    return StepResult(outcome=StepOutcome.SKIP_USER, reason="not_flagged_or_manual_reply")
+    return StepResult(
+        outcome=StepOutcome.SKIP_USER,
+        reason=reason or "conversation_not_eligible",
+    )
 
 
 # def _parse_uuid(value: str | None) -> bool:
