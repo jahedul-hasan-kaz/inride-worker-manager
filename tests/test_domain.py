@@ -1,19 +1,33 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 from app.domain.handle_result import HandleDisposition
-from app.domain.models import DeliveryJob, JobKind, PushStatus
+from app.domain.models import DeliveryJob, DeliveryTarget, JobKind, PushStatus
 from app.domain.policies import ImmediateSingleNotificationPolicy
+from app.eligibility.context import EffectiveConfig
 from app.monitoring.metrics import PushMetrics
+from app.pipeline.push_types import BatchPushResponse, PushSendResult
 from app.pipeline.runner import DeliveryRunner
 
 
 def test_immediate_policy_always_delivers():
     policy = ImmediateSingleNotificationPolicy()
     job = DeliveryJob(job_kind=JobKind.IMMEDIATE_SINGLE, notification_id=uuid4())
+    assert policy.should_deliver(job) is True
+    assert policy.skip_status(job) is None
+
+
+def test_immediate_policy_ignores_expires_at():
+    policy = ImmediateSingleNotificationPolicy()
+    job = DeliveryJob(
+        job_kind=JobKind.IMMEDIATE_SINGLE,
+        notification_id=uuid4(),
+        expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+    )
     assert policy.should_deliver(job) is True
     assert policy.skip_status(job) is None
 
@@ -103,13 +117,13 @@ def test_execute_job_partial_success_marks_sent():
         notification_id=uuid4(),
         tenant_id=uuid4(),
     )
-    target_ok = SimpleNamespace(
+    target_ok = DeliveryTarget(
         device_token_id=uuid4(),
         push_token="ExponentPushToken[ok]",
         user_id=uuid4(),
         notification_priority=1,
     )
-    target_bad = SimpleNamespace(
+    target_bad = DeliveryTarget(
         device_token_id=uuid4(),
         push_token="ExponentPushToken[bad]",
         user_id=uuid4(),
@@ -117,18 +131,80 @@ def test_execute_job_partial_success_marks_sent():
     )
 
     sender = MagicMock()
-    sender.send.side_effect = [
-        (True, None, False),
-        (False, "boom", False),
-    ]
+    sender.send_push_batch.return_value = BatchPushResponse(
+        sent_count=2,
+        failed_count=0,
+        results=[
+            PushSendResult(device_token_id=target_ok.device_token_id, status="sent"),
+            PushSendResult(device_token_id=target_bad.device_token_id, status="sent"),
+        ],
+    )
     runner = DeliveryRunner(sender=sender)
 
     with patch("app.pipeline.runner.session_scope") as scope, patch(
+        "app.pipeline.runner.load_global_effective_config",
+        return_value=EffectiveConfig(),
+    ), patch(
         "app.pipeline.runner.RecipientResolver.resolve",
         return_value=[target_ok, target_bad],
     ), patch("app.pipeline.runner.DeviceIdempotency.try_claim", return_value=True), patch(
         "app.pipeline.runner.DeviceIdempotency.mark_sent"
     ) as mark_sent, patch(
+        "app.pipeline.runner.DeviceIdempotency.seal_open_sending",
+        return_value=0,
+    ), patch(
+        "app.pipeline.runner.DeviceIdempotency.has_any_sent",
+        return_value=False,
+    ), patch(
+        "app.pipeline.runner.NotificationFinalizer.finalize"
+    ) as finalize, patch(
+        "app.pipeline.runner.NotificationFinalizer.deactivate_tokens"
+    ):
+        session = MagicMock()
+        scope.return_value.__enter__.return_value = session
+        scope.return_value.__exit__.return_value = False
+        result = runner.process_job(job)
+
+    assert result.notification_status == PushStatus.SENT
+    assert mark_sent.call_count == 2
+    sender.send_push_batch.assert_called_once()
+    finalize.assert_called()
+    assert finalize.call_args.kwargs["status"] == PushStatus.SENT
+
+
+def test_execute_job_all_failed_marks_failed():
+    job = DeliveryJob(
+        job_kind=JobKind.IMMEDIATE_SINGLE,
+        notification_id=uuid4(),
+        tenant_id=uuid4(),
+    )
+    target = DeliveryTarget(
+        device_token_id=uuid4(),
+        push_token="ExponentPushToken[x]",
+        user_id=uuid4(),
+        notification_priority=0,
+    )
+    sender = MagicMock()
+    sender.send_push_batch.return_value = BatchPushResponse(
+        sent_count=0,
+        failed_count=1,
+        results=[
+            PushSendResult(
+                device_token_id=target.device_token_id,
+                status="failed",
+                error="fail",
+            ),
+        ],
+    )
+    runner = DeliveryRunner(sender=sender)
+
+    with patch("app.pipeline.runner.session_scope") as scope, patch(
+        "app.pipeline.runner.load_global_effective_config",
+        return_value=EffectiveConfig(),
+    ), patch(
+        "app.pipeline.runner.RecipientResolver.resolve",
+        return_value=[target],
+    ), patch("app.pipeline.runner.DeviceIdempotency.try_claim", return_value=True), patch(
         "app.pipeline.runner.DeviceIdempotency.release_claim"
     ) as release, patch(
         "app.pipeline.runner.DeviceIdempotency.seal_open_sending",
@@ -146,49 +222,6 @@ def test_execute_job_partial_success_marks_sent():
         scope.return_value.__exit__.return_value = False
         result = runner.process_job(job)
 
-    assert result.notification_status == PushStatus.SENT
-    assert mark_sent.call_count == 1
-    assert release.call_count == 1
-    finalize.assert_called()
-    assert finalize.call_args.kwargs["status"] == PushStatus.SENT
-
-
-def test_execute_job_all_failed_marks_failed():
-    job = DeliveryJob(
-        job_kind=JobKind.IMMEDIATE_SINGLE,
-        notification_id=uuid4(),
-        tenant_id=uuid4(),
-    )
-    target = SimpleNamespace(
-        device_token_id=uuid4(),
-        push_token="ExponentPushToken[x]",
-        user_id=uuid4(),
-        notification_priority=0,
-    )
-    sender = MagicMock()
-    sender.send.return_value = (False, "fail", False)
-    runner = DeliveryRunner(sender=sender)
-
-    with patch("app.pipeline.runner.session_scope") as scope, patch(
-        "app.pipeline.runner.RecipientResolver.resolve",
-        return_value=[target],
-    ), patch("app.pipeline.runner.DeviceIdempotency.try_claim", return_value=True), patch(
-        "app.pipeline.runner.DeviceIdempotency.release_claim"
-    ), patch(
-        "app.pipeline.runner.DeviceIdempotency.seal_open_sending",
-        return_value=0,
-    ), patch(
-        "app.pipeline.runner.DeviceIdempotency.has_any_sent",
-        return_value=False,
-    ), patch(
-        "app.pipeline.runner.NotificationFinalizer.finalize"
-    ) as finalize, patch(
-        "app.pipeline.runner.NotificationFinalizer.deactivate_tokens"
-    ):
-        session = MagicMock()
-        scope.return_value.__enter__.return_value = session
-        scope.return_value.__exit__.return_value = False
-        result = runner.process_job(job)
-
     assert result.notification_status == PushStatus.FAILED
+    assert release.call_count == 1
     assert finalize.call_args.kwargs["status"] == PushStatus.FAILED

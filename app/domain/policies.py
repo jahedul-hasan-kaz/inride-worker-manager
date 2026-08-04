@@ -6,7 +6,7 @@ from app.domain.models import DeliveryJob, PushStatus
 
 
 class DeliveryPolicy(Protocol):
-    """Pluggable gate before claim/send. v1 = always deliver; future TTL/aggregate."""
+    """Pluggable gate before claim/send."""
 
     def should_deliver(self, job: DeliveryJob) -> bool:
         ...
@@ -17,7 +17,7 @@ class DeliveryPolicy(Protocol):
 
 
 class ImmediateSingleNotificationPolicy:
-    """v1: deliver every claimed job immediately."""
+    """Deliver all claimed jobs; TTL is payload-only, not a delivery gate."""
 
     def should_deliver(self, job: DeliveryJob) -> bool:
         return True
@@ -25,11 +25,5 @@ class ImmediateSingleNotificationPolicy:
     def skip_status(self, job: DeliveryJob) -> Optional[PushStatus]:
         return None
 
-
-# Future stubs (not wired):
-#
-# class TtlDeliveryPolicy:
-#     def should_deliver(self, job: DeliveryJob) -> bool:
-#         return job.expires_at is None or job.expires_at > datetime.utcnow()
-#     def skip_status(self, job: DeliveryJob) -> Optional[PushStatus]:
-#         return PushStatus.EXPIRED
+    def skip_reason(self, job: DeliveryJob) -> str:
+        return "skipped_by_policy"

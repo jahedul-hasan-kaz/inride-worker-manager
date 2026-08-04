@@ -36,6 +36,32 @@ class NotificationFinalizer:
         push_metrics.notification_finalized(status.value)
 
     @staticmethod
+    def finalize_many(
+        session: Session,
+        notification_ids: List[UUID],
+        *,
+        status: PushStatus,
+        error: Optional[str] = None,
+    ) -> None:
+        if not notification_ids:
+            return
+        (
+            session.query(NotificationInDB)
+            .filter(NotificationInDB.id.in_(notification_ids))
+            .update(
+                {
+                    NotificationInDB.push_status: status.value,
+                    NotificationInDB.push_error: (error or None)[:2000] if error else None,
+                    NotificationInDB.updated_at: datetime.utcnow(),
+                },
+                synchronize_session=False,
+            )
+        )
+        session.commit()
+        for _ in notification_ids:
+            push_metrics.notification_finalized(status.value)
+
+    @staticmethod
     def deactivate_tokens(session: Session, token_ids: List[UUID]) -> None:
         if not token_ids:
             return
